@@ -58,10 +58,35 @@ export interface DBBill {
   deleted_at?: string;
 }
 
+// ==================== INVENTORY TYPES ====================
+
+export interface DBInventoryItem {
+  id: string;
+  vendor_id?: string;
+  name: string;
+  description?: string;
+  quantity: string; // Stored as TEXT for decimal precision
+  unit_type: string;
+  sku?: string;
+  barcode?: string;
+  supplier_name?: string;
+  supplier_contact?: string;
+  min_stock_level?: string; // Stored as TEXT for decimal precision
+  reorder_quantity?: string; // Stored as TEXT for decimal precision
+  is_active: number; // SQLite boolean (0 or 1)
+  is_synced: number; // SQLite boolean (0 or 1)
+  created_at: string;
+  updated_at: string;
+  last_restocked_at?: string;
+  deleted_at?: string;
+}
+
+// ==================== SYNC QUEUE ====================
+
 export interface DBSyncQueue {
   id: number;
   operation_type: 'create' | 'update' | 'delete';
-  entity_type: 'category' | 'item' | 'bill';
+  entity_type: 'category' | 'item' | 'bill' | 'inventory';
   entity_id: string;
   data: string; // JSON string
   timestamp: string;

@@ -57,6 +57,10 @@ import RestoringDataScreen from '../screens/RestoringDataScreen';
 import RestoreSuccessScreen from '../screens/RestoreSuccessScreen';
 import SetAdminPinScreen from '../screens/SetAdminPinScreen';
 
+// ==================== NEW: INVENTORY SCREEN ====================
+import InventoryManagementScreen from '../screens/InventoryManagementScreen';
+// ==================== END NEW ====================
+
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 const AppNavigator: React.FC = () => {
@@ -185,6 +189,15 @@ const AppNavigator: React.FC = () => {
         component={EditItemScreen}
         options={{ headerShown: false }}
       />
+      
+      {/* ==================== NEW: INVENTORY MANAGEMENT ==================== */}
+      <Stack.Screen 
+        name="InventoryManagement" 
+        component={InventoryManagementScreen}
+        options={{ animation: 'slide_from_right', animationDuration: 300 }}
+      />
+      {/* ==================== END NEW ==================== */}
+      
       <Stack.Screen 
         name="BillFormat" 
         component={BillFormatScreen}

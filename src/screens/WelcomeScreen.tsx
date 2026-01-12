@@ -1,15 +1,19 @@
-import React, {useEffect, useRef} from 'react';
-import {View, Text, StyleSheet, Animated} from 'react-native';
+import React, {useEffect, useRef, useState} from 'react';
+import {View, Text, StyleSheet, Animated, ActivityIndicator} from 'react-native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import StoreIcon from '../assets/icons/store.svg';
 import AnimatedButton from '../components/AnimatedButton';
 import type {RootStackParamList} from '../types/business.types';
+import { getBusinessSettings, saveBusinessSettings } from '../services/storage';
 
 type WelcomeScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Welcome'>;
 };
 
 const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
+  const [isLoading, setIsLoading] = useState(true);
+  const [isReturningUser, setIsReturningUser] = useState(false);
+
   const iconScale = useRef(new Animated.Value(0)).current;
   const iconOpacity = useRef(new Animated.Value(0)).current;
   const titleTranslateY = useRef(new Animated.Value(20)).current;
@@ -20,6 +24,53 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
   const buttonsOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    trackWelcomeView();
+  }, []);
+
+  useEffect(() => {
+    if (!isLoading) {
+      startAnimations();
+    }
+  }, [isLoading]);
+
+  const trackWelcomeView = async () => {
+    try {
+      setIsLoading(true);
+      const settings = await getBusinessSettings();
+
+      // Track welcome screen analytics
+      const viewCount = (settings?.welcome_screen_view_count || 0) + 1;
+      const timestamp = new Date().toISOString();
+      const isFirstView = viewCount === 1;
+
+      // Check if returning user
+      setIsReturningUser(viewCount > 1);
+
+      // Save analytics
+      const saveData: {
+        welcome_screen_view_count: number;
+        last_welcome_view_date: string;
+        first_welcome_view_date?: string;
+      } = {
+        welcome_screen_view_count: viewCount,
+        last_welcome_view_date: timestamp,
+      };
+
+      // Save first view date only on first visit
+      if (isFirstView) {
+        saveData.first_welcome_view_date = timestamp;
+      }
+
+      await saveBusinessSettings(saveData);
+    } catch (error) {
+      console.error('Failed to track welcome view:', error);
+      // Continue anyway
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const startAnimations = () => {
     Animated.sequence([
       Animated.delay(100),
       Animated.parallel([
@@ -87,15 +138,44 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
         }),
       ]),
     ]).start();
-  }, []);
+  };
 
-  const handleCreateBusiness = () => {
+  const handleCreateBusiness = async () => {
+    try {
+      // Track which option was selected
+      await saveBusinessSettings({
+        onboarding_path: 'create_new',
+        onboarding_started_date: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Failed to track onboarding path:', error);
+      // Continue anyway
+    }
     navigation.navigate('BusinessSetup1');
   };
 
-  const handleJoinBusiness = () => {
+  const handleJoinBusiness = async () => {
+    try {
+      // Track which option was selected
+      await saveBusinessSettings({
+        onboarding_path: 'join_existing',
+        onboarding_started_date: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Failed to track onboarding path:', error);
+      // Continue anyway
+    }
     navigation.navigate('JoinBusiness');
   };
+
+  if (isLoading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color="#C62828" />
+        <Text style={styles.loadingText}>Loading...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -119,7 +199,9 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
               transform: [{translateY: titleTranslateY}],
             },
           ]}>
-          <Text style={styles.title}>Welcome</Text>
+          <Text style={styles.title}>
+            {isReturningUser ? 'Welcome Back' : 'Welcome'}
+          </Text>
         </Animated.View>
 
         <Animated.View
@@ -130,7 +212,11 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
               transform: [{translateY: subtitleTranslateY}],
             },
           ]}>
-          <Text style={styles.subtitle}>Get started with your POS system</Text>
+          <Text style={styles.subtitle}>
+            {isReturningUser 
+              ? 'Continue setting up your POS system' 
+              : 'Get started with your POS system'}
+          </Text>
         </Animated.View>
       </View>
 
@@ -165,6 +251,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     flexDirection: 'column',
     alignItems: 'flex-start',
+  },
+  loadingContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingTop: 0,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: '#666666',
   },
   contentContainer: {
     width: '100%',

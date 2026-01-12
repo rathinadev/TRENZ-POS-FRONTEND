@@ -5,10 +5,15 @@ import { formatDisplayDateTime } from '../utils/helpers';
 import { getDatabase } from '../database/schema';
 import API from './api';
 import { getUserData } from './auth';
+import { 
+  getUnsyncedInventoryItems, 
+  bulkUpsertInventoryItems, 
+  markInventoryItemSynced 
+} from './storage';
 
 export interface SyncOperation {
   operation_type: 'create' | 'update' | 'delete';
-  entity_type: 'category' | 'item' | 'bill';
+  entity_type: 'category' | 'item' | 'bill' | 'inventory';
   entity_id: string;
   data: any;
   timestamp: string;
@@ -53,7 +58,8 @@ export const getNetworkStatus = async (): Promise<boolean> => {
 const saveSyncToHistory = async (
   categoriesSynced: number,
   itemsSynced: number,
-  billsSynced: number
+  billsSynced: number,
+  inventorySynced?: number
 ): Promise<void> => {
   try {
     const now = new Date().toISOString();
@@ -68,6 +74,7 @@ const saveSyncToHistory = async (
         { name: 'Categories', count: categoriesSynced },
         { name: 'Items', count: itemsSynced },
         { name: 'Bills', count: billsSynced },
+        { name: 'Inventory', count: inventorySynced || 0 },
       ].filter(item => item.count > 0), // Only include items that were actually synced
     };
     
@@ -312,35 +319,134 @@ export const syncBills = async (): Promise<{ success: boolean; synced: number }>
   }
 };
 
+// ==================== INVENTORY SYNC ====================
+
+export const syncInventory = async (): Promise<{ success: boolean; synced: number }> => {
+  try {
+    const unsyncedItems = await getUnsyncedInventoryItems();
+    
+    if (unsyncedItems.length === 0) {
+      return { success: true, synced: 0 };
+    }
+    
+    console.log(`Syncing ${unsyncedItems.length} inventory items...`);
+    
+    let syncedCount = 0;
+    let errorCount = 0;
+
+    for (const item of unsyncedItems) {
+      try {
+        // Check if item exists on server
+        let existsOnServer = false;
+        try {
+          await API.inventory.getById(item.id);
+          existsOnServer = true;
+        } catch (error: any) {
+          if (error.response?.status !== 404) {
+            throw error; // Re-throw if not 404
+          }
+        }
+
+        if (existsOnServer) {
+          // Update on server
+          await API.inventory.update(item.id, {
+            name: item.name,
+            description: item.description,
+            quantity: item.quantity,
+            unit_type: item.unit_type,
+            sku: item.sku,
+            barcode: item.barcode,
+            supplier_name: item.supplier_name,
+            supplier_contact: item.supplier_contact,
+            min_stock_level: item.min_stock_level,
+            reorder_quantity: item.reorder_quantity,
+            is_active: item.is_active,
+          });
+        } else {
+          // Create on server
+          await API.inventory.create({
+            name: item.name,
+            description: item.description,
+            quantity: item.quantity,
+            unit_type: item.unit_type,
+            sku: item.sku,
+            barcode: item.barcode,
+            supplier_name: item.supplier_name,
+            supplier_contact: item.supplier_contact,
+            min_stock_level: item.min_stock_level,
+            reorder_quantity: item.reorder_quantity,
+            is_active: item.is_active,
+          });
+        }
+
+        // Mark as synced
+        await markInventoryItemSynced(item.id);
+        syncedCount++;
+      } catch (error) {
+        console.error(`Failed to sync inventory item ${item.id}:`, error);
+        errorCount++;
+      }
+    }
+
+    console.log(`Inventory synced: ${syncedCount} items, ${errorCount} errors`);
+    
+    return { 
+      success: errorCount === 0, 
+      synced: syncedCount 
+    };
+  } catch (error) {
+    console.error('Inventory sync failed:', error);
+    return { success: false, synced: 0 };
+  }
+};
+
 export const syncAll = async (): Promise<{
   success: boolean;
   categoriesSynced: number;
   itemsSynced: number;
   billsSynced: number;
+  inventorySynced: number;
 }> => {
   console.log('=== Starting full sync ===');
   
   const online = await getNetworkStatus();
   if (!online) {
     console.log('Offline - skipping sync');
-    return { success: false, categoriesSynced: 0, itemsSynced: 0, billsSynced: 0 };
+    return { 
+      success: false, 
+      categoriesSynced: 0, 
+      itemsSynced: 0, 
+      billsSynced: 0,
+      inventorySynced: 0,
+    };
   }
   
   const categoriesResult = await syncCategories();
   const itemsResult = await syncItems();
   const billsResult = await syncBills();
+  const inventoryResult = await syncInventory();
   
-  const success = categoriesResult.success && itemsResult.success && billsResult.success;
+  const success = 
+    categoriesResult.success && 
+    itemsResult.success && 
+    billsResult.success &&
+    inventoryResult.success;
   
   console.log('=== Sync complete ===');
-  console.log(`Categories: ${categoriesResult.synced}, Items: ${itemsResult.synced}, Bills: ${billsResult.synced}`);
+  console.log(`Categories: ${categoriesResult.synced}, Items: ${itemsResult.synced}, Bills: ${billsResult.synced}, Inventory: ${inventoryResult.synced}`);
   
   // Save to history if any items were synced
-  if (success && (categoriesResult.synced > 0 || itemsResult.synced > 0 || billsResult.synced > 0)) {
+  if (success && (
+    categoriesResult.synced > 0 || 
+    itemsResult.synced > 0 || 
+    billsResult.synced > 0 ||
+    inventoryResult.synced > 0
+  )) {
     await saveSyncToHistory(
       categoriesResult.synced,
       itemsResult.synced,
-      billsResult.synced
+      billsResult.synced,
+      inventoryResult.synced
     );
     
     // Update last sync time
@@ -353,6 +459,7 @@ export const syncAll = async (): Promise<{
     categoriesSynced: categoriesResult.synced,
     itemsSynced: itemsResult.synced,
     billsSynced: billsResult.synced,
+    inventorySynced: inventoryResult.synced,
   };
 };
 
@@ -438,8 +545,21 @@ export const initialSync = async (): Promise<{ success: boolean; error?: string 
     
     console.log(`Downloaded ${items.length} items`);
     
+    // Download inventory items
+    console.log('Downloading inventory...');
+    try {
+      const inventoryItems = await API.inventory.getAll();
+      
+      await bulkUpsertInventoryItems(inventoryItems);
+      
+      console.log(`Downloaded ${inventoryItems.length} inventory items`);
+    } catch (error) {
+      console.warn('Failed to download inventory (may not be available):', error);
+      // Continue even if inventory download fails
+    }
+    
     // Save initial sync to history
-    await saveSyncToHistory(categories.length, items.length, 0);
+    await saveSyncToHistory(categories.length, items.length, 0, 0);
     
     // Update last sync time
     await AsyncStorage.setItem('last_sync_time', now);
@@ -463,6 +583,7 @@ export default {
   syncCategories,
   syncItems,
   syncBills,
+  syncInventory,
   syncAll,
   initialSync,
 };

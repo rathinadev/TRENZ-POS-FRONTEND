@@ -84,6 +84,7 @@ export type RootStackParamList = {
   SetAdminPin: undefined;
   AdminDashboard: undefined;
   ItemManagement: undefined;
+  InventoryManagement: undefined;
   AddItem: undefined;
   EditItem: { item: MenuItem };
   

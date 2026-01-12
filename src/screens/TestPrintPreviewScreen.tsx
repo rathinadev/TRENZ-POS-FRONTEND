@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/business.types';
+import { getBusinessSettings, saveBusinessSettings } from '../services/storage';
 
 type TestPrintPreviewScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'TestPrintPreview'>;
@@ -19,35 +20,129 @@ type TestPrintPreviewScreenProps = {
 
 type PrintStatus = 'idle' | 'printing' | 'success' | 'failure';
 
+interface BusinessInfo {
+  name: string;
+  address: string;
+  phone: string;
+  gst: string;
+}
+
+interface PrinterInfo {
+  name: string;
+  paperSize: string;
+  connected: boolean;
+}
+
 const TestPrintPreviewScreen: React.FC<TestPrintPreviewScreenProps> = ({ navigation }) => {
   const [printStatus, setPrintStatus] = useState<PrintStatus>('idle');
+  const [isLoading, setIsLoading] = useState(true);
+  const [businessInfo, setBusinessInfo] = useState<BusinessInfo>({
+    name: 'Sample Restaurant',
+    address: '123 Main Street, City',
+    phone: '+91 98765 43210',
+    gst: '29ABCDE1234F1Z5',
+  });
+  const [printerInfo, setPrinterInfo] = useState<PrinterInfo>({
+    name: 'Epson TM-T82',
+    paperSize: '80mm',
+    connected: false,
+  });
+  const [printTime, setPrintTime] = useState<string>('');
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
 
   useEffect(() => {
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-    ]).start();
+    loadData();
   }, []);
 
-  const handlePrint = () => {
+  useEffect(() => {
+    if (!isLoading) {
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+        Animated.timing(slideAnim, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [isLoading]);
+
+  const loadData = async () => {
+    try {
+      setIsLoading(true);
+      const settings = await getBusinessSettings();
+
+      if (settings) {
+        // Load business info
+        setBusinessInfo({
+          name: settings.business_name || 'Sample Restaurant',
+          address: settings.business_address || '123 Main Street, City',
+          phone: settings.business_phone || '+91 98765 43210',
+          gst: settings.business_gst || '29ABCDE1234F1Z5',
+        });
+
+        // Load printer info
+        setPrinterInfo({
+          name: settings.printer_name || 'Epson TM-T82',
+          paperSize: settings.paper_size || '80mm',
+          connected: settings.printer_connected === 1,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load data:', error);
+      // Continue with defaults
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const formatTime = (date: Date): string => {
+    const hours = date.getHours();
+    const minutes = date.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+    const displayMinutes = minutes.toString().padStart(2, '0');
+    return `${displayHours}:${displayMinutes} ${ampm}`;
+  };
+
+  const handlePrint = async () => {
     setPrintStatus('printing');
-    
-    // Simulate printing process
-    setTimeout(() => {
-      // Randomly simulate success or failure (for demo)
-      const isSuccess = Math.random() > 0.3; // 70% success rate
-      setPrintStatus(isSuccess ? 'success' : 'failure');
-    }, 2000);
+    const currentTime = formatTime(new Date());
+    setPrintTime(currentTime);
+
+    try {
+      // Simulate printing process
+      await new Promise<void>(resolve => setTimeout(() => resolve(), 2000));
+
+      // Check printer connection from database
+      const settings = await getBusinessSettings();
+      const isConnected = settings?.printer_connected === 1;
+
+      if (isConnected) {
+        // Success - save test print info
+        const timestamp = new Date().toISOString();
+        const testPrintCount = (settings?.test_print_count || 0) + 1;
+
+        await saveBusinessSettings({
+          last_test_print_date: timestamp,
+          test_print_count: testPrintCount,
+        });
+
+        setPrintStatus('success');
+      } else {
+        // Failure - printer not connected
+        setPrintStatus('failure');
+      }
+    } catch (error) {
+      console.error('Print error:', error);
+      setPrintStatus('failure');
+    }
   };
 
   const handleCancel = () => {
@@ -58,6 +153,24 @@ const TestPrintPreviewScreen: React.FC<TestPrintPreviewScreenProps> = ({ navigat
     setPrintStatus('idle');
     navigation.goBack();
   };
+
+  const formatDate = (): string => {
+    const now = new Date();
+    const day = now.getDate();
+    const month = now.toLocaleString('en-US', { month: 'short' });
+    const year = now.getFullYear();
+    const time = formatTime(now);
+    return `${day} ${month} ${year}, ${time}`;
+  };
+
+  if (isLoading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color="#C62828" />
+        <Text style={styles.loadingText}>Loading preview...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -104,10 +217,10 @@ const TestPrintPreviewScreen: React.FC<TestPrintPreviewScreenProps> = ({ navigat
         >
           {/* Business Header */}
           <View style={styles.businessHeader}>
-            <Text style={styles.businessName}>Sample Restaurant</Text>
-            <Text style={styles.businessAddress}>123 Main Street, City</Text>
-            <Text style={styles.businessPhone}>Phone: +91 98765 43210</Text>
-            <Text style={styles.businessGST}>GST: 29ABCDE1234F1Z5</Text>
+            <Text style={styles.businessName}>{businessInfo.name}</Text>
+            <Text style={styles.businessAddress}>{businessInfo.address}</Text>
+            <Text style={styles.businessPhone}>Phone: {businessInfo.phone}</Text>
+            <Text style={styles.businessGST}>GST: {businessInfo.gst}</Text>
           </View>
 
           {/* Bill Details */}
@@ -118,7 +231,7 @@ const TestPrintPreviewScreen: React.FC<TestPrintPreviewScreenProps> = ({ navigat
             </View>
             <View style={styles.billRow}>
               <Text style={styles.billLabel}>Date:</Text>
-              <Text style={styles.billValue}>20 Dec 2025, 2:30 PM</Text>
+              <Text style={styles.billValue}>{formatDate()}</Text>
             </View>
           </View>
 
@@ -244,7 +357,7 @@ const TestPrintPreviewScreen: React.FC<TestPrintPreviewScreenProps> = ({ navigat
             <View style={styles.detailsCard}>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Printer:</Text>
-                <Text style={styles.detailValue}>Epson TM-T82</Text>
+                <Text style={styles.detailValue}>{printerInfo.name}</Text>
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Connection:</Text>
@@ -255,11 +368,11 @@ const TestPrintPreviewScreen: React.FC<TestPrintPreviewScreenProps> = ({ navigat
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Paper Size:</Text>
-                <Text style={styles.detailValue}>80 mm Receipt</Text>
+                <Text style={styles.detailValue}>{printerInfo.paperSize} Receipt</Text>
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Print Time:</Text>
-                <Text style={styles.detailValue}>02:39 PM</Text>
+                <Text style={styles.detailValue}>{printTime}</Text>
               </View>
             </View>
 
@@ -307,7 +420,7 @@ const TestPrintPreviewScreen: React.FC<TestPrintPreviewScreenProps> = ({ navigat
             <View style={styles.errorCard}>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Printer:</Text>
-                <Text style={styles.detailValue}>Epson TM-T82</Text>
+                <Text style={styles.detailValue}>{printerInfo.name}</Text>
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Connection:</Text>
@@ -322,7 +435,7 @@ const TestPrintPreviewScreen: React.FC<TestPrintPreviewScreenProps> = ({ navigat
               </View>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Attempt Time:</Text>
-                <Text style={styles.detailValue}>02:25 PM</Text>
+                <Text style={styles.detailValue}>{printTime}</Text>
               </View>
             </View>
 
@@ -349,6 +462,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
+  },
+  loadingContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: '#666666',
   },
   header: {
     paddingHorizontal: 20,

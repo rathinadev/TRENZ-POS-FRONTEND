@@ -107,6 +107,33 @@ const createTables = async () => {
     );
   `);
 
+  // ==================== NEW: INVENTORY ITEMS TABLE ====================
+  // Inventory items table (for raw materials / stock management)
+  executeSql(`
+    CREATE TABLE IF NOT EXISTS inventory_items (
+      id TEXT PRIMARY KEY,
+      vendor_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      quantity TEXT NOT NULL DEFAULT '0',
+      unit_type TEXT NOT NULL,
+      sku TEXT,
+      barcode TEXT,
+      supplier_name TEXT,
+      supplier_contact TEXT,
+      min_stock_level TEXT,
+      reorder_quantity TEXT,
+      is_active INTEGER DEFAULT 1,
+      is_synced INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_restocked_at TEXT,
+      deleted_at TEXT,
+      UNIQUE(name, vendor_id)
+    );
+  `);
+  // ==================== END NEW ====================
+
   // Bills table
   executeSql(`
     CREATE TABLE IF NOT EXISTS bills (
@@ -189,6 +216,14 @@ const createTables = async () => {
   executeSql(`CREATE INDEX IF NOT EXISTS idx_bills_synced ON bills(is_synced);`);
   executeSql(`CREATE INDEX IF NOT EXISTS idx_items_synced ON items(is_synced);`);
   executeSql(`CREATE INDEX IF NOT EXISTS idx_sync_queue_synced ON sync_queue(synced);`);
+  
+  // ==================== NEW: INVENTORY INDEXES ====================
+  executeSql(`CREATE INDEX IF NOT EXISTS idx_inventory_vendor ON inventory_items(vendor_id);`);
+  executeSql(`CREATE INDEX IF NOT EXISTS idx_inventory_active ON inventory_items(is_active);`);
+  executeSql(`CREATE INDEX IF NOT EXISTS idx_inventory_sku ON inventory_items(sku);`);
+  executeSql(`CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory_items(barcode);`);
+  executeSql(`CREATE INDEX IF NOT EXISTS idx_inventory_synced ON inventory_items(is_synced);`);
+  // ==================== END NEW ====================
 
   console.log('All tables created successfully');
 };
@@ -199,6 +234,7 @@ export const dropAllTables = async () => {
   executeSql('DROP TABLE IF EXISTS categories;');
   executeSql('DROP TABLE IF EXISTS items;');
   executeSql('DROP TABLE IF EXISTS item_categories;');
+  executeSql('DROP TABLE IF EXISTS inventory_items;'); // NEW
   executeSql('DROP TABLE IF EXISTS bills;');
   executeSql('DROP TABLE IF EXISTS sync_queue;');
   executeSql('DROP TABLE IF EXISTS settings;');

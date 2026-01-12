@@ -210,6 +210,83 @@ export const API = {
     },
   },
 
+  // ==================== INVENTORY ====================
+  inventory: {
+    // Get all inventory items
+    getAll: async (params?: {
+      is_active?: boolean;
+      low_stock?: boolean;
+      search?: string;
+      unit_type?: string;
+    }): Promise<any[]> => {
+      const response = await apiClient.get('/inventory/', { params });
+      return response.data;
+    },
+
+    // Get single inventory item
+    getById: async (id: string): Promise<any> => {
+      const response = await apiClient.get(`/inventory/${id}/`);
+      return response.data;
+    },
+
+    // Create inventory item
+    create: async (data: {
+      name: string;
+      description?: string;
+      quantity: string;
+      unit_type: string;
+      sku?: string;
+      barcode?: string;
+      supplier_name?: string;
+      supplier_contact?: string;
+      min_stock_level?: string;
+      reorder_quantity?: string;
+      is_active?: boolean;
+    }): Promise<any> => {
+      const response = await apiClient.post('/inventory/', data);
+      return response.data;
+    },
+
+    // Update inventory item
+    update: async (id: string, data: Partial<{
+      name: string;
+      description: string;
+      quantity: string;
+      unit_type: string;
+      sku: string;
+      barcode: string;
+      supplier_name: string;
+      supplier_contact: string;
+      min_stock_level: string;
+      reorder_quantity: string;
+      is_active: boolean;
+    }>): Promise<any> => {
+      const response = await apiClient.patch(`/inventory/${id}/`, data);
+      return response.data;
+    },
+
+    // Update stock with action
+    updateStock: async (id: string, data: {
+      action: 'set' | 'add' | 'subtract';
+      quantity: string;
+      notes?: string;
+    }): Promise<any> => {
+      const response = await apiClient.patch(`/inventory/${id}/stock/`, data);
+      return response.data;
+    },
+
+    // Delete inventory item
+    delete: async (id: string): Promise<void> => {
+      await apiClient.delete(`/inventory/${id}/`);
+    },
+
+    // Get unit types
+    getUnitTypes: async (): Promise<any[]> => {
+      const response = await apiClient.get('/inventory/unit-types/');
+      return response.data;
+    },
+  },
+
   // ==================== BILLS / SALES BACKUP ====================
   bills: {
     sync: async (bills: Array<{

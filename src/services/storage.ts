@@ -648,6 +648,7 @@ export const saveBusinessSettings = async (data: {
   business_address?: string;
   business_phone?: string;
   business_email?: string;
+  business_gst?: string;
   tax_rate?: number;
   currency?: string;
   bill_prefix?: string;
@@ -677,6 +678,15 @@ export const saveBusinessSettings = async (data: {
   admin_pin_set_date?: string;
   app_launch_count?: number;
   last_app_launch?: string;
+  setup_completed?: number;
+  setup_completed_date?: string;
+  last_test_print_date?: string;
+  test_print_count?: number;
+  welcome_screen_view_count?: number;
+  last_welcome_view_date?: string;
+  first_welcome_view_date?: string;
+  onboarding_path?: string;
+  onboarding_started_date?: string;
 }): Promise<void> => {
   const timestamp = now();
   
@@ -707,20 +717,24 @@ export const saveBusinessSettings = async (data: {
       // Insert
       executeSql(
         `INSERT INTO business_settings 
-         (business_name, business_address, business_phone, business_email, tax_rate, currency, 
+         (business_name, business_address, business_phone, business_email, business_gst, tax_rate, currency, 
           bill_prefix, bill_footer_note, printer_name, printer_type, device_id, admin_pin, 
           gst_type, item_level_override, rounding_rule, invoice_format, 
           gst_breakdown, item_tax_split, total_quantity, payment_method, business_code, logo_path,
           paper_size, auto_print, printer_connected, last_restore_date, last_pdf_export_date,
           last_summary_range, last_summary_custom_days, last_summary_date, admin_pin_set_date,
-          app_launch_count, last_app_launch,
+          app_launch_count, last_app_launch, setup_completed, setup_completed_date,
+          last_test_print_date, test_print_count,
+          welcome_screen_view_count, last_welcome_view_date, first_welcome_view_date,
+          onboarding_path, onboarding_started_date,
           is_synced, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           data.business_name || null,
           data.business_address || null,
           data.business_phone || null,
           data.business_email || null,
+          data.business_gst || null,
           data.tax_rate || 0,
           data.currency || 'INR',
           data.bill_prefix || 'BILL',
@@ -750,6 +764,15 @@ export const saveBusinessSettings = async (data: {
           data.admin_pin_set_date || null,
           data.app_launch_count || 0,
           data.last_app_launch || null,
+          data.setup_completed !== undefined ? data.setup_completed : 0,
+          data.setup_completed_date || null,
+          data.last_test_print_date || null,
+          data.test_print_count || 0,
+          data.welcome_screen_view_count || 0,
+          data.last_welcome_view_date || null,
+          data.first_welcome_view_date || null,
+          data.onboarding_path || null,
+          data.onboarding_started_date || null,
           0,
           timestamp,
           timestamp,
@@ -760,6 +783,518 @@ export const saveBusinessSettings = async (data: {
     console.log('Business settings saved');
   } catch (error) {
     console.error('Failed to save business settings:', error);
+    throw error;
+  }
+};
+
+// ==================== INVENTORY MANAGEMENT ====================
+// NEW FUNCTIONS - ADD THESE AT THE END
+
+export interface InventoryItem {
+  id: string;
+  vendor_id?: string;
+  name: string;
+  description?: string;
+  quantity: string;
+  unit_type: string;
+  unit_type_display?: string;
+  sku?: string;
+  barcode?: string;
+  supplier_name?: string;
+  supplier_contact?: string;
+  min_stock_level?: string;
+  reorder_quantity?: string;
+  is_active: boolean;
+  is_low_stock?: boolean;
+  needs_reorder?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  last_restocked_at?: string;
+  is_synced?: boolean;
+}
+
+export interface UnitType {
+  value: string;
+  label: string;
+}
+
+const UNIT_TYPES: UnitType[] = [
+  { value: 'kg', label: 'Kilogram (kg)' },
+  { value: 'g', label: 'Gram (g)' },
+  { value: 'L', label: 'Liter (L)' },
+  { value: 'mL', label: 'Milliliter (mL)' },
+  { value: 'pcs', label: 'Piece (pcs)' },
+  { value: 'pkt', label: 'Packet (pkt)' },
+  { value: 'box', label: 'Box (box)' },
+  { value: 'carton', label: 'Carton (carton)' },
+  { value: 'bag', label: 'Bag (bag)' },
+  { value: 'bottle', label: 'Bottle (bottle)' },
+  { value: 'can', label: 'Can (can)' },
+  { value: 'dozen', label: 'Dozen (dozen)' },
+  { value: 'm', label: 'Meter (m)' },
+  { value: 'cm', label: 'Centimeter (cm)' },
+  { value: 'sqm', label: 'Square Meter (sqm)' },
+  { value: 'cum', label: 'Cubic Meter (cum)' },
+];
+
+export const getUnitTypes = (): Promise<UnitType[]> => {
+  return Promise.resolve(UNIT_TYPES);
+};
+
+const getUnitTypeDisplay = (unitType: string): string => {
+  const unit = UNIT_TYPES.find(u => u.value === unitType);
+  return unit ? unit.label : unitType;
+};
+
+const isLowStock = (quantity: string, minStockLevel?: string): boolean => {
+  if (!minStockLevel) return false;
+  return parseFloat(quantity) <= parseFloat(minStockLevel);
+};
+
+export const initInventoryTable = (): void => {
+  try {
+    executeSql(
+      `CREATE TABLE IF NOT EXISTS inventory_items (
+        id TEXT PRIMARY KEY,
+        vendor_id TEXT,
+        name TEXT NOT NULL,
+        description TEXT,
+        quantity TEXT NOT NULL DEFAULT '0',
+        unit_type TEXT NOT NULL,
+        sku TEXT,
+        barcode TEXT,
+        supplier_name TEXT,
+        supplier_contact TEXT,
+        min_stock_level TEXT,
+        reorder_quantity TEXT,
+        is_active INTEGER DEFAULT 1,
+        is_synced INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_restocked_at TEXT,
+        deleted_at TEXT,
+        UNIQUE(name, vendor_id)
+      )`,
+      []
+    );
+
+    // Create indexes
+    executeSql('CREATE INDEX IF NOT EXISTS idx_inventory_vendor ON inventory_items(vendor_id)', []);
+    executeSql('CREATE INDEX IF NOT EXISTS idx_inventory_active ON inventory_items(is_active)', []);
+    executeSql('CREATE INDEX IF NOT EXISTS idx_inventory_sku ON inventory_items(sku)', []);
+    executeSql('CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory_items(barcode)', []);
+    executeSql('CREATE INDEX IF NOT EXISTS idx_inventory_synced ON inventory_items(is_synced)', []);
+
+    console.log('Inventory table initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize inventory table:', error);
+  }
+};
+
+export const getInventoryItems = async (filters?: {
+  isActive?: boolean;
+  lowStock?: boolean;
+  search?: string;
+  unitType?: string;
+}): Promise<InventoryItem[]> => {
+  try {
+    let query = 'SELECT * FROM inventory_items WHERE deleted_at IS NULL';
+    const params: any[] = [];
+
+    if (filters?.isActive !== undefined) {
+      query += ' AND is_active = ?';
+      params.push(filters.isActive ? 1 : 0);
+    }
+
+    if (filters?.search) {
+      query += ' AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ? OR supplier_name LIKE ?)';
+      const searchPattern = `%${filters.search}%`;
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+    }
+
+    if (filters?.unitType) {
+      query += ' AND unit_type = ?';
+      params.push(filters.unitType);
+    }
+
+    query += ' ORDER BY name ASC';
+
+    const results = executeSql(query, params);
+    const items: InventoryItem[] = [];
+
+    for (let i = 0; i < results.length; i++) {
+      const row = results[i];
+      const item: InventoryItem = {
+        id: row.id,
+        vendor_id: row.vendor_id,
+        name: row.name,
+        description: row.description,
+        quantity: row.quantity,
+        unit_type: row.unit_type,
+        unit_type_display: getUnitTypeDisplay(row.unit_type),
+        sku: row.sku,
+        barcode: row.barcode,
+        supplier_name: row.supplier_name,
+        supplier_contact: row.supplier_contact,
+        min_stock_level: row.min_stock_level,
+        reorder_quantity: row.reorder_quantity,
+        is_active: row.is_active === 1,
+        is_low_stock: isLowStock(row.quantity, row.min_stock_level),
+        needs_reorder: isLowStock(row.quantity, row.min_stock_level),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        last_restocked_at: row.last_restocked_at,
+        is_synced: row.is_synced === 1,
+      };
+      items.push(item);
+    }
+
+    if (filters?.lowStock) {
+      return items.filter(item => item.is_low_stock);
+    }
+
+    return items;
+  } catch (error) {
+    console.error('Failed to get inventory items:', error);
+    return [];
+  }
+};
+
+export const getInventoryItemById = async (id: string): Promise<InventoryItem | null> => {
+  try {
+    const results = executeSql(
+      'SELECT * FROM inventory_items WHERE id = ? AND deleted_at IS NULL',
+      [id]
+    );
+
+    if (results.length === 0) return null;
+
+    const row = results[0];
+    return {
+      id: row.id,
+      vendor_id: row.vendor_id,
+      name: row.name,
+      description: row.description,
+      quantity: row.quantity,
+      unit_type: row.unit_type,
+      unit_type_display: getUnitTypeDisplay(row.unit_type),
+      sku: row.sku,
+      barcode: row.barcode,
+      supplier_name: row.supplier_name,
+      supplier_contact: row.supplier_contact,
+      min_stock_level: row.min_stock_level,
+      reorder_quantity: row.reorder_quantity,
+      is_active: row.is_active === 1,
+      is_low_stock: isLowStock(row.quantity, row.min_stock_level),
+      needs_reorder: isLowStock(row.quantity, row.min_stock_level),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      last_restocked_at: row.last_restocked_at,
+      is_synced: row.is_synced === 1,
+    };
+  } catch (error) {
+    console.error('Failed to get inventory item:', error);
+    return null;
+  }
+};
+
+export const createInventoryItem = async (
+  item: Omit<InventoryItem, 'id' | 'created_at' | 'updated_at' | 'is_synced'>
+): Promise<InventoryItem> => {
+  const id = uuidv4();
+  const timestamp = now();
+
+  try {
+    executeSql(
+      `INSERT INTO inventory_items (
+        id, vendor_id, name, description, quantity, unit_type,
+        sku, barcode, supplier_name, supplier_contact,
+        min_stock_level, reorder_quantity, is_active,
+        is_synced, created_at, updated_at, last_restocked_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        item.vendor_id || null,
+        item.name,
+        item.description || null,
+        item.quantity,
+        item.unit_type,
+        item.sku || null,
+        item.barcode || null,
+        item.supplier_name || null,
+        item.supplier_contact || null,
+        item.min_stock_level || null,
+        item.reorder_quantity || null,
+        item.is_active ? 1 : 0,
+        0,
+        timestamp,
+        timestamp,
+        item.last_restocked_at || null,
+      ]
+    );
+
+    const created = await getInventoryItemById(id);
+    if (!created) {
+      throw new Error('Failed to create inventory item');
+    }
+
+    console.log(`Inventory item created: ${id}`);
+    return created;
+  } catch (error) {
+    console.error('Failed to create inventory item:', error);
+    throw error;
+  }
+};
+
+export const updateInventoryItem = async (
+  id: string,
+  updates: Partial<InventoryItem>
+): Promise<InventoryItem> => {
+  const timestamp = now();
+  
+  try {
+    const setClauses: string[] = [];
+    const params: any[] = [];
+
+    if (updates.name !== undefined) {
+      setClauses.push('name = ?');
+      params.push(updates.name);
+    }
+    if (updates.description !== undefined) {
+      setClauses.push('description = ?');
+      params.push(updates.description || null);
+    }
+    if (updates.quantity !== undefined) {
+      setClauses.push('quantity = ?');
+      params.push(updates.quantity);
+    }
+    if (updates.unit_type !== undefined) {
+      setClauses.push('unit_type = ?');
+      params.push(updates.unit_type);
+    }
+    if (updates.sku !== undefined) {
+      setClauses.push('sku = ?');
+      params.push(updates.sku || null);
+    }
+    if (updates.barcode !== undefined) {
+      setClauses.push('barcode = ?');
+      params.push(updates.barcode || null);
+    }
+    if (updates.supplier_name !== undefined) {
+      setClauses.push('supplier_name = ?');
+      params.push(updates.supplier_name || null);
+    }
+    if (updates.supplier_contact !== undefined) {
+      setClauses.push('supplier_contact = ?');
+      params.push(updates.supplier_contact || null);
+    }
+    if (updates.min_stock_level !== undefined) {
+      setClauses.push('min_stock_level = ?');
+      params.push(updates.min_stock_level || null);
+    }
+    if (updates.reorder_quantity !== undefined) {
+      setClauses.push('reorder_quantity = ?');
+      params.push(updates.reorder_quantity || null);
+    }
+    if (updates.is_active !== undefined) {
+      setClauses.push('is_active = ?');
+      params.push(updates.is_active ? 1 : 0);
+    }
+    if (updates.last_restocked_at !== undefined) {
+      setClauses.push('last_restocked_at = ?');
+      params.push(updates.last_restocked_at || null);
+    }
+
+    setClauses.push('updated_at = ?', 'is_synced = ?');
+    params.push(timestamp, 0);
+    params.push(id);
+
+    executeSql(
+      `UPDATE inventory_items SET ${setClauses.join(', ')} WHERE id = ?`,
+      params
+    );
+
+    const updated = await getInventoryItemById(id);
+    if (!updated) {
+      throw new Error('Failed to update inventory item');
+    }
+
+    console.log(`Inventory item updated: ${id}`);
+    return updated;
+  } catch (error) {
+    console.error('Failed to update inventory item:', error);
+    throw error;
+  }
+};
+
+export const updateInventoryStock = async (
+  id: string,
+  action: 'set' | 'add' | 'subtract',
+  quantity: string,
+  notes?: string
+): Promise<InventoryItem> => {
+  try {
+    const item = await getInventoryItemById(id);
+    if (!item) {
+      throw new Error('Inventory item not found');
+    }
+
+    let newQuantity: number;
+    const currentQty = parseFloat(item.quantity);
+    const changeQty = parseFloat(quantity);
+
+    switch (action) {
+      case 'set':
+        newQuantity = changeQty;
+        break;
+      case 'add':
+        newQuantity = currentQty + changeQty;
+        break;
+      case 'subtract':
+        newQuantity = currentQty - changeQty;
+        if (newQuantity < 0) {
+          throw new Error('Cannot subtract more than current quantity');
+        }
+        break;
+      default:
+        throw new Error('Invalid action');
+    }
+
+    return updateInventoryItem(id, {
+      quantity: newQuantity.toString(),
+      last_restocked_at: now(),
+    });
+  } catch (error) {
+    console.error('Failed to update inventory stock:', error);
+    throw error;
+  }
+};
+
+export const deleteInventoryItem = async (id: string): Promise<void> => {
+  const timestamp = now();
+  
+  try {
+    executeSql(
+      'UPDATE inventory_items SET deleted_at = ?, is_synced = ? WHERE id = ?',
+      [timestamp, 0, id]
+    );
+    
+    console.log(`Inventory item deleted: ${id}`);
+  } catch (error) {
+    console.error('Failed to delete inventory item:', error);
+    throw error;
+  }
+};
+
+export const getUnsyncedInventoryItems = async (): Promise<InventoryItem[]> => {
+  try {
+    const results = executeSql(
+      'SELECT * FROM inventory_items WHERE is_synced = 0 AND deleted_at IS NULL'
+    );
+
+    return results.map(row => ({
+      id: row.id,
+      vendor_id: row.vendor_id,
+      name: row.name,
+      description: row.description,
+      quantity: row.quantity,
+      unit_type: row.unit_type,
+      unit_type_display: getUnitTypeDisplay(row.unit_type),
+      sku: row.sku,
+      barcode: row.barcode,
+      supplier_name: row.supplier_name,
+      supplier_contact: row.supplier_contact,
+      min_stock_level: row.min_stock_level,
+      reorder_quantity: row.reorder_quantity,
+      is_active: row.is_active === 1,
+      is_low_stock: isLowStock(row.quantity, row.min_stock_level),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      last_restocked_at: row.last_restocked_at,
+      is_synced: false,
+    }));
+  } catch (error) {
+    console.error('Failed to get unsynced inventory items:', error);
+    return [];
+  }
+};
+
+export const markInventoryItemSynced = async (id: string): Promise<void> => {
+  try {
+    executeSql(
+      'UPDATE inventory_items SET is_synced = 1 WHERE id = ?',
+      [id]
+    );
+  } catch (error) {
+    console.error('Failed to mark inventory item as synced:', error);
+  }
+};
+
+export const bulkUpsertInventoryItems = async (items: InventoryItem[]): Promise<void> => {
+  try {
+    for (const item of items) {
+      const existing = await getInventoryItemById(item.id);
+      
+      if (existing) {
+        executeSql(
+          `UPDATE inventory_items SET
+            name = ?, description = ?, quantity = ?, unit_type = ?,
+            sku = ?, barcode = ?, supplier_name = ?, supplier_contact = ?,
+            min_stock_level = ?, reorder_quantity = ?, is_active = ?,
+            updated_at = ?, last_restocked_at = ?, is_synced = ?
+          WHERE id = ?`,
+          [
+            item.name,
+            item.description || null,
+            item.quantity,
+            item.unit_type,
+            item.sku || null,
+            item.barcode || null,
+            item.supplier_name || null,
+            item.supplier_contact || null,
+            item.min_stock_level || null,
+            item.reorder_quantity || null,
+            item.is_active ? 1 : 0,
+            item.updated_at || now(),
+            item.last_restocked_at || null,
+            1,
+            item.id,
+          ]
+        );
+      } else {
+        executeSql(
+          `INSERT INTO inventory_items (
+            id, vendor_id, name, description, quantity, unit_type,
+            sku, barcode, supplier_name, supplier_contact,
+            min_stock_level, reorder_quantity, is_active,
+            created_at, updated_at, last_restocked_at, is_synced
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            item.id,
+            item.vendor_id || null,
+            item.name,
+            item.description || null,
+            item.quantity,
+            item.unit_type,
+            item.sku || null,
+            item.barcode || null,
+            item.supplier_name || null,
+            item.supplier_contact || null,
+            item.min_stock_level || null,
+            item.reorder_quantity || null,
+            item.is_active ? 1 : 0,
+            item.created_at || now(),
+            item.updated_at || now(),
+            item.last_restocked_at || null,
+            1,
+          ]
+        );
+      }
+    }
+    
+    console.log(`Bulk upserted ${items.length} inventory items`);
+  } catch (error) {
+    console.error('Failed to bulk upsert inventory items:', error);
     throw error;
   }
 };
@@ -782,4 +1317,16 @@ export default {
   getUnsyncedBillsCount,
   getBusinessSettings,
   saveBusinessSettings,
+  // Inventory exports
+  getUnitTypes,
+  initInventoryTable,
+  getInventoryItems,
+  getInventoryItemById,
+  createInventoryItem,
+  updateInventoryItem,
+  updateInventoryStock,
+  deleteInventoryItem,
+  getUnsyncedInventoryItems,
+  markInventoryItemSynced,
+  bulkUpsertInventoryItems,
 };
