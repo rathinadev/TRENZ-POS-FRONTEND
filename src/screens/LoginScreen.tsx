@@ -64,29 +64,24 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
       const result = await login(username.trim(), password);
 
       if (result.success) {
-        // Login successful - perform initial sync
-        Alert.alert(
-          'Success',
-          'Login successful! Syncing data...',
-          [
-            {
-              text: 'OK',
-              onPress: async () => {
-                // Perform initial sync in background
-                try {
-                  await initialSync();
-                  console.log('Initial sync completed');
-                } catch (error) {
-                  console.error('Initial sync failed:', error);
-                  // Continue anyway - user can sync manually later
-                }
-                
-                // Navigate to mode selection
-                navigation.replace('ModeSelection');
-              },
-            },
-          ]
-        );
+        // Login successful - perform initial sync quickly
+        console.log('🔄 Starting initial sync (downloading base data for offline use)...');
+        
+        // Start sync and navigate immediately - don't block on sync
+        // Note: App is now ONLINE-FIRST, so this just ensures offline data availability
+        initialSync().then(syncResult => {
+          if (syncResult.success) {
+            console.log('✅ Initial sync completed - offline data ready');
+          } else {
+            console.warn('⚠️ Sync incomplete:', syncResult.error);
+          }
+        }).catch(error => {
+          console.warn('⚠️ Sync error:', error.message);
+        });
+        
+        // Navigate immediately - app will use ONLINE-FIRST approach
+        console.log('🌐 App will prioritize online API data, with local fallback');
+        navigation.replace('ModeSelection');
       } else {
         Alert.alert('Login Failed', result.error || 'Invalid credentials');
       }
@@ -101,11 +96,11 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   const handleForgotPassword = () => {
     Alert.alert(
       'Reset Password',
-      'Password reset requires your GST number for verification.\n\nIf your vendor account does not have a GST number on file, please contact support.\n\nEmail: support@yourcompany.com\nPhone: +1234567890',
+      'Password reset requires your GST number for verification.\n\nIf your vendor account does not have a GST number on file, please contact support.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Contact Support',
+          text: 'Proceed to Reset',
           onPress: () => {
             // TODO: Open email client or dialer
             console.log('Contact support');

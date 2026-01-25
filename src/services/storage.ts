@@ -1,4 +1,3 @@
-// src/services/storage.ts
 import { getDatabase } from '../database/schema';
 import { queueOperation } from './sync';
 import { v4 as uuidv4 } from 'uuid';
@@ -20,9 +19,11 @@ export const getCategories = async (includeInactive = false): Promise<any[]> => 
       ? 'SELECT * FROM categories WHERE deleted_at IS NULL ORDER BY sort_order ASC, name ASC'
       : 'SELECT * FROM categories WHERE is_active = 1 AND deleted_at IS NULL ORDER BY sort_order ASC, name ASC';
     
-    return executeSql(query);
+    const results = executeSql(query);
+    console.log(`📁 Loaded ${results.length} categories from database:`, results.map(c => c.name).join(', '));
+    return results;
   } catch (error) {
-    console.error('Failed to get categories:', error);
+    console.error('❌ Failed to get categories:', error);
     return [];
   }
 };
@@ -181,8 +182,7 @@ export const getItems = async (options?: {
 }): Promise<any[]> => {
   try {
     let query = `
-      SELECT DISTINCT i.* 
-      FROM items i
+      SELECT DISTINCT i.* FROM items i
       LEFT JOIN item_categories ic ON i.id = ic.item_id
       WHERE i.deleted_at IS NULL
     `;
@@ -263,28 +263,40 @@ export const createItem = async (data: {
   name: string;
   description?: string;
   price: number;
+  mrp_price?: number;
+  price_type?: 'exclusive' | 'inclusive';
+  gst_percentage?: number;
+  veg_nonveg?: 'veg' | 'nonveg';
+  additional_discount?: number;
   stock_quantity?: number;
   sku?: string;
   barcode?: string;
   category_ids?: string[];
   image_path?: string;
   image_url?: string;
+  local_image_path?: string;
   sort_order?: number;
 }): Promise<string> => {
   const id = uuidv4();
   const timestamp = now();
   
   try {
-    // Insert item
+    // Insert item with all new fields
     executeSql(
       `INSERT INTO items 
-      (id, name, description, price, stock_quantity, sku, barcode, is_active, sort_order, image_path, image_url, is_synced, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, name, description, price, mrp_price, price_type, gst_percentage, veg_nonveg, additional_discount,
+       stock_quantity, sku, barcode, is_active, sort_order, image_path, image_url, local_image_path, is_synced, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         data.name,
         data.description || null,
         data.price,
+        data.mrp_price || data.price, // Default to price if not specified
+        data.price_type || 'exclusive',
+        data.gst_percentage || 0,
+        data.veg_nonveg || null,
+        data.additional_discount || 0,
         data.stock_quantity || 0,
         data.sku || null,
         data.barcode || null,
@@ -292,6 +304,7 @@ export const createItem = async (data: {
         data.sort_order || 0,
         data.image_path || null,
         data.image_url || null,
+        data.local_image_path || null,
         0,
         timestamp,
         timestamp,
@@ -318,6 +331,11 @@ export const createItem = async (data: {
         name: data.name,
         description: data.description,
         price: data.price,
+        mrp_price: data.mrp_price || data.price,
+        price_type: data.price_type || 'exclusive',
+        gst_percentage: data.gst_percentage || 0,
+        veg_nonveg: data.veg_nonveg,
+        additional_discount: data.additional_discount || 0,
         stock_quantity: data.stock_quantity || 0,
         sku: data.sku,
         barcode: data.barcode,
@@ -344,12 +362,20 @@ export const updateItem = async (
     name: string;
     description: string;
     price: number;
+    mrp_price: number;
+    price_type: 'exclusive' | 'inclusive';
+    gst_percentage: number;
+    veg_nonveg: 'veg' | 'nonveg';
+    additional_discount: number;
     stock_quantity: number;
     sku: string;
     barcode: string;
     is_active: boolean;
     category_ids: string[];
     sort_order: number;
+    image_path: string;
+    image_url: string;
+    local_image_path: string;
   }>
 ): Promise<void> => {
   const timestamp = now();
@@ -370,6 +396,26 @@ export const updateItem = async (
       updateFields.push('price = ?');
       values.push(data.price);
     }
+    if (data.mrp_price !== undefined) {
+      updateFields.push('mrp_price = ?');
+      values.push(data.mrp_price);
+    }
+    if (data.price_type !== undefined) {
+      updateFields.push('price_type = ?');
+      values.push(data.price_type);
+    }
+    if (data.gst_percentage !== undefined) {
+      updateFields.push('gst_percentage = ?');
+      values.push(data.gst_percentage);
+    }
+    if (data.veg_nonveg !== undefined) {
+      updateFields.push('veg_nonveg = ?');
+      values.push(data.veg_nonveg);
+    }
+    if (data.additional_discount !== undefined) {
+      updateFields.push('additional_discount = ?');
+      values.push(data.additional_discount);
+    }
     if (data.stock_quantity !== undefined) {
       updateFields.push('stock_quantity = ?');
       values.push(data.stock_quantity);
@@ -389,6 +435,18 @@ export const updateItem = async (
     if (data.sort_order !== undefined) {
       updateFields.push('sort_order = ?');
       values.push(data.sort_order);
+    }
+    if (data.image_path !== undefined) {
+      updateFields.push('image_path = ?');
+      values.push(data.image_path);
+    }
+    if (data.image_url !== undefined) {
+      updateFields.push('image_url = ?');
+      values.push(data.image_url);
+    }
+    if (data.local_image_path !== undefined) {
+      updateFields.push('local_image_path = ?');
+      values.push(data.local_image_path);
     }
     
     updateFields.push('is_synced = ?', 'updated_at = ?');
@@ -457,17 +515,32 @@ export const deleteItem = async (id: string): Promise<void> => {
 // ==================== BILLS ====================
 
 export const createBill = async (data: {
+  invoice_number: string;
   bill_number: string;
-  items: any[];
+  billing_mode: 'gst' | 'non_gst';
+  restaurant_name: string;
+  address: string;
+  gstin?: string;
+  fssai_license?: string;
+  bill_date: string;
+  items: any[]; // BillItem[]
   subtotal: number;
-  tax_amount: number;
-  discount_amount: number;
+  discount_amount?: number;
+  discount_percentage?: number;
+  cgst_amount?: number;
+  sgst_amount?: number;
+  igst_amount?: number;
+  total_tax?: number;
   total_amount: number;
-  payment_method?: string;
+  payment_mode: 'cash' | 'upi' | 'card' | 'credit' | 'other';
+  payment_reference?: string;
+  amount_paid: number;
+  change_amount?: number;
   customer_name?: string;
   customer_phone?: string;
   notes?: string;
   device_id: string;
+  vendor_id?: string;
 }): Promise<string> => {
   const id = uuidv4();
   const timestamp = now();
@@ -475,29 +548,47 @@ export const createBill = async (data: {
   try {
     executeSql(
       `INSERT INTO bills 
-       (id, bill_number, customer_name, customer_phone, items, subtotal, tax_amount, discount_amount, 
-        total_amount, payment_method, notes, device_id, is_synced, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, invoice_number, bill_number, billing_mode, restaurant_name, address, gstin, fssai_license, bill_date,
+        customer_name, customer_phone, items, subtotal, discount_amount, discount_percentage,
+        cgst_amount, sgst_amount, igst_amount, total_tax, total_amount,
+        payment_mode, payment_reference, amount_paid, change_amount, notes,
+        device_id, vendor_id, is_synced, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
+        data.invoice_number,
         data.bill_number,
+        data.billing_mode,
+        data.restaurant_name,
+        data.address,
+        data.gstin || null,
+        data.fssai_license || null,
+        data.bill_date,
         data.customer_name || null,
         data.customer_phone || null,
         JSON.stringify(data.items),
         data.subtotal,
-        data.tax_amount,
-        data.discount_amount,
+        data.discount_amount || 0,
+        data.discount_percentage || 0,
+        data.cgst_amount || 0,
+        data.sgst_amount || 0,
+        data.igst_amount || 0,
+        data.total_tax || 0,
         data.total_amount,
-        data.payment_method || null,
+        data.payment_mode,
+        data.payment_reference || null,
+        data.amount_paid,
+        data.change_amount || 0,
         data.notes || null,
         data.device_id,
+        data.vendor_id || null,
         0,
         timestamp,
         timestamp,
       ]
     );
     
-    console.log(`Bill created: ${id}`);
+    console.log(`Bill created: ${id} (${data.invoice_number})`);
     return id;
   } catch (error) {
     console.error('Failed to create bill:', error);
@@ -582,24 +673,30 @@ export const getUnsyncedBillsCount = async (): Promise<number> => {
   }
 };
 
-// Wrapper for createBill that handles device_id automatically
+// Wrapper for createBill that handles device_id and vendor profile automatically
 export const saveBill = async (data: {
+  invoice_number: string;
   bill_number: string;
-  items: string; // JSON string
+  billing_mode: 'gst' | 'non_gst';
+  items: any[]; // BillItem[] array
   subtotal: number;
-  tax_amount: number;
-  discount_amount: number;
+  discount_amount?: number;
+  discount_percentage?: number;
+  cgst_amount?: number;
+  sgst_amount?: number;
+  igst_amount?: number;
+  total_tax?: number;
   total_amount: number;
-  payment_method: string;
+  payment_mode: 'cash' | 'upi' | 'card' | 'credit' | 'other';
+  payment_reference?: string;
+  amount_paid: number;
+  change_amount?: number;
   customer_name?: string;
   customer_phone?: string;
   notes?: string;
-  created_at: string;
+  bill_date?: string;
 }): Promise<string> => {
   try {
-    // Parse items from JSON string to array
-    const itemsArray = JSON.parse(data.items);
-    
     // Get device ID (or generate one if not exists)
     let deviceId = '';
     const settings = await getBusinessSettings();
@@ -611,19 +708,72 @@ export const saveBill = async (data: {
       await saveBusinessSettings({ device_id: deviceId });
     }
     
-    // Call createBill with device_id
+    // Get vendor profile for bill header
+    const { getVendorProfile, getUserData, saveVendorProfile } = await import('./auth');
+    let vendorProfile = await getVendorProfile();
+    
+    // FALLBACK FIX: If DB profile is missing, check AsyncStorage/User Data
+    if (!vendorProfile) {
+      console.log('⚠️ Vendor profile not found in DB, attempting fallback to User Data');
+      const userData = await getUserData();
+
+      if (userData && userData.vendor_id) {
+        // Construct a temporary profile from auth data
+        vendorProfile = {
+          id: userData.vendor_id,
+          username: userData.username,
+          email: '', // Defaults if not available
+          business_name: userData.business_name || 'Store',
+          address: userData.address || '',
+          phone: userData.phone || '',
+          gst_no: userData.gst_no || '',
+          fssai_license: userData.fssai_license || null,
+          logo_url: userData.logo_url || null,
+          footer_note: userData.footer_note || null,
+          is_approved: true, 
+        } as any; // Cast as any to satisfy TS partial mismatch
+
+        // Self-heal: Try to save this profile back to DB for next time
+        // Using 'as any' to bypass strict Type checking on the argument here
+        saveVendorProfile(vendorProfile as any).catch(e => console.warn('Failed to heal vendor profile:', e));
+      }
+    }
+
+    if (!vendorProfile) {
+      throw new Error('Vendor profile not found. Please login again.');
+    }
+    
+    // Use bill_date or current date
+    const billDate = data.bill_date || new Date().toISOString().split('T')[0];
+    
+    // Call createBill with all required fields
     return await createBill({
+      invoice_number: data.invoice_number,
       bill_number: data.bill_number,
-      items: itemsArray,
+      billing_mode: data.billing_mode,
+      restaurant_name: vendorProfile.business_name || 'Store',
+      address: vendorProfile.address || '',
+      gstin: vendorProfile.gst_no,
+      fssai_license: vendorProfile.fssai_license || undefined,
+      bill_date: billDate,
+      items: data.items,
       subtotal: data.subtotal,
-      tax_amount: data.tax_amount,
-      discount_amount: data.discount_amount,
+      discount_amount: data.discount_amount || 0,
+      discount_percentage: data.discount_percentage || 0,
+      cgst_amount: data.cgst_amount || 0,
+      sgst_amount: data.sgst_amount || 0,
+      igst_amount: data.igst_amount || 0,
+      total_tax: data.total_tax || 0,
       total_amount: data.total_amount,
-      payment_method: data.payment_method,
+      payment_mode: data.payment_mode,
+      payment_reference: data.payment_reference,
+      amount_paid: data.amount_paid,
+      change_amount: data.change_amount || 0,
       customer_name: data.customer_name,
       customer_phone: data.customer_phone,
       notes: data.notes,
       device_id: deviceId,
+      vendor_id: vendorProfile.id,
     });
   } catch (error) {
     console.error('Failed to save bill:', error);
@@ -728,7 +878,7 @@ export const saveBusinessSettings = async (data: {
           welcome_screen_view_count, last_welcome_view_date, first_welcome_view_date,
           onboarding_path, onboarding_started_date,
           is_synced, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           data.business_name || null,
           data.business_address || null,
@@ -788,7 +938,6 @@ export const saveBusinessSettings = async (data: {
 };
 
 // ==================== INVENTORY MANAGEMENT ====================
-// NEW FUNCTIONS - ADD THESE AT THE END
 
 export interface InventoryItem {
   id: string;
@@ -824,17 +973,12 @@ const UNIT_TYPES: UnitType[] = [
   { value: 'L', label: 'Liter (L)' },
   { value: 'mL', label: 'Milliliter (mL)' },
   { value: 'pcs', label: 'Piece (pcs)' },
-  { value: 'pkt', label: 'Packet (pkt)' },
+  { value: 'pack', label: 'Packet (pack)' },
   { value: 'box', label: 'Box (box)' },
-  { value: 'carton', label: 'Carton (carton)' },
   { value: 'bag', label: 'Bag (bag)' },
   { value: 'bottle', label: 'Bottle (bottle)' },
   { value: 'can', label: 'Can (can)' },
   { value: 'dozen', label: 'Dozen (dozen)' },
-  { value: 'm', label: 'Meter (m)' },
-  { value: 'cm', label: 'Centimeter (cm)' },
-  { value: 'sqm', label: 'Square Meter (sqm)' },
-  { value: 'cum', label: 'Cubic Meter (cum)' },
 ];
 
 export const getUnitTypes = (): Promise<UnitType[]> => {
@@ -1242,7 +1386,7 @@ export const bulkUpsertInventoryItems = async (items: InventoryItem[]): Promise<
             sku = ?, barcode = ?, supplier_name = ?, supplier_contact = ?,
             min_stock_level = ?, reorder_quantity = ?, is_active = ?,
             updated_at = ?, last_restocked_at = ?, is_synced = ?
-          WHERE id = ?`,
+           WHERE id = ?`,
           [
             item.name,
             item.description || null,

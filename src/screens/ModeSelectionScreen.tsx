@@ -67,6 +67,10 @@ const ModeSelectionScreen: React.FC<ModeSelectionScreenProps> = ({
     navigation.navigate('Dashboard');
   };
 
+  const handleInventoryMode = () => {
+    navigation.navigate('InventoryManagement');
+  };
+
   if (isLoading) {
     return (
       <View style={[styles.container, styles.loadingContainer]}>
@@ -115,8 +119,18 @@ const ModeSelectionScreen: React.FC<ModeSelectionScreenProps> = ({
             onPress={handleDashboardMode}
             activeOpacity={0.9}
           >
-            <Text style={styles.smallCardTitle}>Dashboard Mode</Text>
+            <Text style={styles.smallCardTitle}>Dashboard</Text>
             <Text style={styles.smallCardSubtitle}>View sales and insights</Text>
+          </TouchableOpacity>
+
+          {/* Inventory Mode */}
+          <TouchableOpacity
+            style={styles.smallCard}
+            onPress={handleInventoryMode}
+            activeOpacity={0.9}
+          >
+            <Text style={styles.smallCardTitle}>Inventory</Text>
+            <Text style={styles.smallCardSubtitle}>Manage stock levels</Text>
           </TouchableOpacity>
 
           {/* Admin Mode */}
@@ -125,10 +139,8 @@ const ModeSelectionScreen: React.FC<ModeSelectionScreenProps> = ({
             onPress={handleAdminMode}
             activeOpacity={0.9}
           >
-            <Text style={styles.smallCardTitle}>Admin Mode</Text>
-            <Text style={styles.smallCardSubtitle}>
-              Manage settings and inventory
-            </Text>
+            <Text style={styles.smallCardTitle}>Admin</Text>
+            <Text style={styles.smallCardSubtitle}>Settings and configuration</Text>
           </TouchableOpacity>
         </View>
       </Animated.View>

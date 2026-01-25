@@ -1,9 +1,11 @@
+import 'react-native-get-random-values';
 import React, {useEffect, useState} from 'react';
 import {StatusBar, View, ActivityIndicator, StyleSheet} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import AppNavigator from './src/navigation/AppNavigator';
 import {initDatabase} from './src/database/schema';
+import {initNetworkListener} from './src/services/sync';
 
 function App(): React.JSX.Element {
   const [isDbInitialized, setIsDbInitialized] = useState(false);
@@ -14,6 +16,12 @@ function App(): React.JSX.Element {
         console.log('Initializing database...');
         await initDatabase();
         console.log('Database initialized successfully');
+        
+        // Initialize network listener for auto-sync
+        console.log('📶 Initializing network listener for auto-sync...');
+        initNetworkListener();
+        console.log('✅ Network listener initialized - will auto-sync when online');
+        
         setIsDbInitialized(true);
       } catch (error) {
         console.error('Failed to initialize database:', error);

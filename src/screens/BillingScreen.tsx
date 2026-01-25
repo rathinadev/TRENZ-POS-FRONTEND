@@ -8,39 +8,26 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
-import type {RootStackParamList} from '../types/business.types';
+import type {RootStackParamList, MenuItem, CartItem} from '../types/business.types';
 import Icon from 'react-native-vector-icons/Ionicons';
-import { getItems, getCategories } from '../services/storage';
+import { getItems, getCategories, getBusinessSettings } from '../services/storage';
+import CryptoJS from 'crypto-js';
 
 type BillingScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Billing'>;
 };
 
-type MenuItem = {
-  id: string;
-  name: string;
-  price: number;
-  category: string;
-  categoryId: string;
-  image?: string;
-};
-
-type CartItem = MenuItem & {
-  quantity: number;
-};
-
-const MEAL_TIMES = ['Morning', 'Lunch', 'Evening', 'Dinner'];
-
 const BillingScreen: React.FC<BillingScreenProps> = ({navigation}) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedMealTime, setSelectedMealTime] = useState('Morning');
   const [selectedCategory, setSelectedCategory] = useState('All Items');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<Array<{id: string; name: string}>>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [outOfStockItems, setOutOfStockItems] = useState<Set<string>>(new Set());
 
   const headerOpacity = useRef(new Animated.Value(0)).current;
   const headerTranslateY = useRef(new Animated.Value(-20)).current;
@@ -63,26 +50,79 @@ const BillingScreen: React.FC<BillingScreenProps> = ({navigation}) => {
 
   const loadData = async () => {
     try {
-      // Load categories
-      const categoriesData = await getCategories();
-      setCategories(categoriesData);
-
-      // Load items
-      const itemsData = await getItems();
+      // ONLINE-FIRST: Try to load from API first
+      console.log('🌐 ONLINE-FIRST: Loading billing data...');
       
-      // Map items with category names
-      const mappedItems = itemsData.map(item => {
-        // Get category name from first category (assuming single category per item for POS)
+      let categoriesData: any[] = [];
+      let itemsData: any[] = [];
+      
+      try {
+        // Check if online
+        const { getNetworkStatus } = await import('../services/sync');
+        const isOnline = await getNetworkStatus();
+        
+        if (isOnline) {
+          console.log('📡 Loading from API (online-first)...');
+          const API = await import('../services/api');
+          
+          // Load from API
+          const [apiCategories, apiItems] = await Promise.all([
+            API.default.categories.getAll(),
+            API.default.items.getAll({ is_active: true }),
+          ]);
+          
+          categoriesData = apiCategories;
+          itemsData = apiItems;
+          
+          console.log('✅ Loaded from API:', {
+            categories: categoriesData.length,
+            items: itemsData.length,
+          });
+        } else {
+          throw new Error('Offline - loading from local storage');
+        }
+      } catch (apiError) {
+        console.warn('⚠️ API failed, loading from local storage:', apiError);
+        // Fallback to local storage
+        categoriesData = await getCategories();
+        itemsData = await getItems();
+      }
+      
+      setCategories(categoriesData);
+      
+      // Map items with ALL fields including GST-related fields
+      const mappedItems: MenuItem[] = itemsData.map(item => {
+        // Get category name from first category (for display)
         const categoryId = item.category_ids?.[0] || '';
         const category = categoriesData.find(cat => cat.id === categoryId);
         
+        // --- FIX: Parse strings to numbers to prevent .toFixed crashes ---
+        const parsedPrice = parseFloat(String(item.price || 0));
+        const parsedMrp = item.mrp_price ? parseFloat(String(item.mrp_price)) : parsedPrice;
+        const parsedGst = item.gst_percentage ? parseFloat(String(item.gst_percentage)) : 0;
+        const parsedDiscount = item.additional_discount ? parseFloat(String(item.additional_discount)) : 0;
+
         return {
           id: item.id,
           name: item.name,
-          price: item.price,
+          price: parsedPrice, // Safe number
+          mrp_price: parsedMrp, // Safe number
+          price_type: (item.price_type as 'exclusive' | 'inclusive') || 'exclusive',
+          gst_percentage: parsedGst, // Safe number
+          veg_nonveg: item.veg_nonveg as 'veg' | 'nonveg' | undefined,
+          additional_discount: parsedDiscount, // Safe number
           category: category?.name || 'Uncategorized',
-          categoryId: categoryId,
+          category_ids: item.category_ids || [categoryId],
           image: item.image_url,
+          image_url: item.image_url,
+          image_path: item.image_path,
+          local_image_path: item.local_image_path,
+          description: item.description,
+          stock_quantity: item.stock_quantity,
+          sku: item.sku,
+          barcode: item.barcode,
+          is_active: item.is_active,
+          sort_order: item.sort_order,
         };
       });
 
@@ -219,6 +259,79 @@ const BillingScreen: React.FC<BillingScreenProps> = ({navigation}) => {
     navigation.goBack();
   };
 
+  const handleMarkOutOfStock = async (itemId: string) => {
+    const newOutOfStock = new Set(outOfStockItems);
+    if (newOutOfStock.has(itemId)) {
+      newOutOfStock.delete(itemId);
+      Alert.alert('Success', 'Item marked as available');
+    } else {
+      newOutOfStock.add(itemId);
+      Alert.alert('Success', 'Item marked as out of stock');
+    }
+    setOutOfStockItems(newOutOfStock);
+  };
+
+  const handleEditItem = async (item: MenuItem) => {
+    try {
+      // Fetch admin PIN from business settings
+      const settings = await getBusinessSettings();
+      const storedHashedPin = settings?.admin_pin;
+
+      // Check if admin PIN is set
+      if (!storedHashedPin) {
+        Alert.alert(
+          'Admin PIN Not Set',
+          'Please set an admin PIN in Admin Dashboard first before editing items.',
+          [
+            {
+              text: 'Go to Admin',
+              onPress: () => navigation.navigate('AdminDashboard'),
+            },
+            {
+              text: 'Cancel',
+              style: 'cancel',
+            },
+          ]
+        );
+        return;
+      }
+
+      // Prompt for admin PIN
+      Alert.prompt(
+        'Admin PIN Required',
+        'Enter admin PIN to edit this item',
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+          },
+          {
+            text: 'OK',
+            onPress: (enteredPin?: string) => {
+              if (!enteredPin || enteredPin.trim() === '') {
+                Alert.alert('Error', 'Please enter a PIN');
+                return;
+              }
+              
+              // Hash the entered PIN and compare with stored hash
+              const hashedEnteredPin = CryptoJS.SHA256(enteredPin).toString();
+              
+              if (hashedEnteredPin === storedHashedPin) {
+                navigation.navigate('EditItem', { item });
+              } else {
+                Alert.alert('Error', 'Incorrect admin PIN');
+              }
+            },
+          },
+        ],
+        'secure-text'
+      );
+    } catch (error) {
+      console.error('Failed to verify admin PIN:', error);
+      Alert.alert('Error', 'Failed to verify admin PIN. Please try again.');
+    }
+  };
+
   // Get unique category names for filter buttons
   const getCategoryFilters = () => {
     const uniqueCategories = Array.from(new Set(menuItems.map(item => item.category)));
@@ -265,7 +378,7 @@ const BillingScreen: React.FC<BillingScreenProps> = ({navigation}) => {
       </Animated.View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Search */}
+        {/* Search Dishes */}
         <Animated.View
           style={[
             styles.searchContainer,
@@ -274,111 +387,31 @@ const BillingScreen: React.FC<BillingScreenProps> = ({navigation}) => {
               transform: [{translateY: searchTranslateY}],
             },
           ]}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search item (e.g., Dosa, Tea)"
-            placeholderTextColor="#999"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
+          <View style={styles.searchInputContainer}>
+            <Icon name="search-outline" size={20} color="#999999" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search dishes (e.g., Idli, Tea, Biryani)"
+              placeholderTextColor="#999999"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+          </View>
         </Animated.View>
 
-        {/* Meal Time Filters */}
+        {/* Category Filters - Horizontal Scroll */}
         <Animated.View
           style={[
-            styles.filtersContainer,
+            styles.categoryContainer,
             {
               opacity: filtersOpacity,
               transform: [{translateX: filtersTranslateX}],
             },
           ]}>
-          <View style={styles.filtersInner}>
-            {MEAL_TIMES.map(time => (
-              <TouchableOpacity
-                key={time}
-                style={[
-                  styles.filterButton,
-                  selectedMealTime === time && styles.filterButtonActive,
-                ]}
-                onPress={() => setSelectedMealTime(time)}>
-                <Text
-                  style={[
-                    styles.filterText,
-                    selectedMealTime === time && styles.filterTextActive,
-                  ]}>
-                  {time}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </Animated.View>
-
-        {/* Popular Items Section */}
-        <Animated.View
-          style={[
-            styles.sectionContainer,
-            {
-              opacity: contentOpacity,
-              transform: [{translateY: contentTranslateY}],
-            },
-          ]}>
-          <Text style={styles.sectionTitle}>Popular Items</Text>
-          {menuItems.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyText}>No items available</Text>
-              <Text style={styles.emptySubtext}>Add items to get started</Text>
-            </View>
-          ) : (
-            <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.popularItemsScroll}>
-              {menuItems.slice(0, 5).map(item => {
-                const quantity = getItemQuantity(item.id);
-                return (
-                  <TouchableOpacity 
-                    key={item.id} 
-                    style={styles.popularItemCard}
-                    onPress={() => quantity === 0 && addToCart(item)}
-                    activeOpacity={quantity > 0 ? 1 : 0.7}>
-                    <View style={styles.itemImageContainer}>
-                      <Icon name="restaurant-outline" size={40} color="#C62828" />
-                    </View>
-                    <Text style={styles.popularItemName} numberOfLines={1}>{item.name}</Text>
-                    <Text style={styles.popularItemPrice}>₹{item.price.toFixed(2)}</Text>
-                    {quantity === 0 ? (
-                      <View style={styles.addButtonSmall}>
-                        <Text style={styles.addButtonSmallText}>Add</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.quantityControlSmall}>
-                        <TouchableOpacity
-                          style={styles.quantityButtonSmall}
-                          onPress={() => removeFromCart(item.id)}>
-                          <Text style={styles.quantityButtonTextSmall}>-</Text>
-                        </TouchableOpacity>
-                        <Text style={styles.quantityTextSmall}>{quantity}</Text>
-                        <TouchableOpacity
-                          style={styles.quantityButtonSmall}
-                          onPress={() => addToCart(item)}>
-                          <Text style={styles.quantityButtonTextSmall}>+</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          )}
-        </Animated.View>
-
-        {/* Category Filters */}
-        <Animated.View
-          style={[
-            styles.categoryContainer,
-            {opacity: contentOpacity},
-          ]}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.categoryScrollContent}>
             {categoryFilters.map(category => (
               <TouchableOpacity
                 key={category}
@@ -399,53 +432,99 @@ const BillingScreen: React.FC<BillingScreenProps> = ({navigation}) => {
           </ScrollView>
         </Animated.View>
 
-        {/* All Items Section */}
+        {/* All Items Section - VERTICAL LAYOUT */}
         <Animated.View
           style={[
             styles.allItemsContainer,
-            {opacity: contentOpacity},
+            {opacity: contentOpacity, transform: [{translateY: contentTranslateY}]},
           ]}>
-          <Text style={styles.sectionTitle}>All Items</Text>
+          <Text style={styles.sectionTitle}>Food Items</Text>
           {filteredItems.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyText}>No items found</Text>
               <Text style={styles.emptySubtext}>Try a different search or category</Text>
             </View>
           ) : (
-            <View style={styles.allItemsGrid}>
+            <View style={styles.verticalItemsList}>
               {filteredItems.map(item => {
                 const quantity = getItemQuantity(item.id);
+                const isOutOfStock = outOfStockItems.has(item.id);
                 return (
-                  <TouchableOpacity 
+                  <View 
                     key={item.id} 
-                    style={styles.allItemCard}
-                    onPress={() => quantity === 0 && addToCart(item)}
-                    activeOpacity={quantity > 0 ? 1 : 0.7}>
-                    <View style={styles.itemImageContainer}>
-                      <Icon name="restaurant-outline" size={40} color="#C62828" />
+                    style={[styles.verticalItemCard, isOutOfStock && styles.outOfStockCard]}>
+                    {/* Item Info Section */}
+                    <View style={styles.itemInfoSection}>
+                      <View style={styles.itemImageSmall}>
+                        <Icon name="restaurant-outline" size={28} color={isOutOfStock ? "#999999" : "#C62828"} />
+                      </View>
+                      <View style={styles.itemDetails}>
+                        <View style={styles.itemNameRow}>
+                          <Text style={[styles.verticalItemName, isOutOfStock && styles.outOfStockText]} numberOfLines={1}>
+                            {item.name}
+                          </Text>
+                          {item.veg_nonveg && (
+                            <View style={[styles.vegBadge, item.veg_nonveg === 'nonveg' && styles.nonVegBadge]}>
+                              <View style={[styles.vegDot, item.veg_nonveg === 'nonveg' && styles.nonVegDot]} />
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.itemCategory}>{item.category}</Text>
+                        <Text style={[styles.verticalItemPrice, isOutOfStock && styles.outOfStockText]}>
+                          ₹{item.price.toFixed(2)}
+                        </Text>
+                      </View>
                     </View>
-                    <Text style={styles.allItemName} numberOfLines={2}>{item.name}</Text>
-                    <Text style={styles.allItemPrice}>₹{item.price.toFixed(2)}</Text>
-                    {quantity === 0 ? (
-                      <View style={styles.addButtonSmall}>
-                        <Text style={styles.addButtonSmallText}>Add</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.quantityControlSmall}>
-                        <TouchableOpacity
-                          style={styles.quantityButtonSmall}
-                          onPress={() => removeFromCart(item.id)}>
-                          <Text style={styles.quantityButtonTextSmall}>-</Text>
-                        </TouchableOpacity>
-                        <Text style={styles.quantityTextSmall}>{quantity}</Text>
-                        <TouchableOpacity
-                          style={styles.quantityButtonSmall}
-                          onPress={() => addToCart(item)}>
-                          <Text style={styles.quantityButtonTextSmall}>+</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
-                  </TouchableOpacity>
+
+                    {/* Action Buttons Section */}
+                    <View style={styles.itemActionsSection}>
+                      {/* Out of Stock Button */}
+                      <TouchableOpacity
+                        style={[styles.stockButton, isOutOfStock && styles.stockButtonActive]}
+                        onPress={() => handleMarkOutOfStock(item.id)}>
+                        <Icon 
+                          name={isOutOfStock ? "close-circle" : "checkmark-circle-outline"} 
+                          size={18} 
+                          color={isOutOfStock ? "#FFFFFF" : "#666666"} 
+                        />
+                        <Text style={[styles.stockButtonText, isOutOfStock && styles.stockButtonTextActive]}>
+                          {isOutOfStock ? 'Out of Stock' : 'In Stock'}
+                        </Text>
+                      </TouchableOpacity>
+
+                      {/* Edit Button */}
+                      <TouchableOpacity
+                        style={styles.editButton}
+                        onPress={() => handleEditItem(item)}>
+                        <Icon name="create-outline" size={18} color="#C62828" />
+                      </TouchableOpacity>
+
+                      {/* Add to Cart */}
+                      {!isOutOfStock && (
+                        quantity === 0 ? (
+                          <TouchableOpacity
+                            style={styles.addButton}
+                            onPress={() => addToCart(item)}>
+                            <Text style={styles.addButtonText}>Add</Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <View style={styles.quantityControl}>
+                            <TouchableOpacity
+                              style={styles.quantityButton}
+                              onPress={() => removeFromCart(item.id)}>
+                              <Text style={styles.quantityButtonText}>-</Text>
+                            </TouchableOpacity>
+                            <Text style={styles.quantityText}>{quantity}</Text>
+                            <TouchableOpacity
+                              style={styles.quantityButton}
+                              onPress={() => addToCart(item)}>
+                              <Text style={styles.quantityButtonText}>+</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )
+                      )}
+                    </View>
+                  </View>
                 );
               })}
             </View>
@@ -504,53 +583,26 @@ const styles = StyleSheet.create({
   },
   searchContainer: {
     paddingHorizontal: 20,
-    marginBottom: 16,
+    marginBottom: 20,
   },
-  searchInput: {
-    height: 48,
+  searchInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 52,
     backgroundColor: '#FFFFFF',
     borderRadius: 16.4,
     paddingHorizontal: 16,
-    fontSize: 16,
-    color: '#333333',
     borderWidth: 1.8,
     borderColor: '#E0E0E0',
   },
-  filtersContainer: {
-    paddingHorizontal: 20,
-    marginBottom: 24,
+  searchIcon: {
+    marginRight: 12,
   },
-  filtersInner: {
-    flexDirection: 'row',
-    backgroundColor: '#F2F2F2',
-    borderRadius: 10,
-    padding: 4,
-    gap: 4,
-  },
-  filterButton: {
+  searchInput: {
     flex: 1,
-    paddingVertical: 10,
-    backgroundColor: 'transparent',
-    borderRadius: 6.8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  filterButtonActive: {
-    backgroundColor: '#C62828',
-  },
-  filterText: {
+    height: '100%',
     fontSize: 16,
-    fontWeight: '600',
     color: '#333333',
-    textAlign: 'center',
-    letterSpacing: -0.31,
-  },
-  filterTextActive: {
-    color: '#FFFFFF',
-  },
-  sectionContainer: {
-    paddingHorizontal: 16,
-    marginBottom: 24,
   },
   sectionTitle: {
     fontSize: 22,
@@ -558,42 +610,7 @@ const styles = StyleSheet.create({
     color: '#333333',
     marginBottom: 16,
     letterSpacing: -0.26,
-  },
-  popularItemsScroll: {
-    paddingHorizontal: 16,
-    gap: 12,
-  },
-  popularItemCard: {
-    width: 160,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    borderWidth: 0.6,
-    borderColor: '#E0E0E0',
-    padding: 12.6,
-    paddingBottom: 0.6,
-  },
-  itemImageContainer: {
-    width: '100%',
-    height: 112,
-    backgroundColor: '#F5F5F5',
-    borderRadius: 6.8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  popularItemName: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333333',
-    marginBottom: 4,
-    letterSpacing: -0.44,
-  },
-  popularItemPrice: {
-    fontSize: 16,
-    fontWeight: '400',
-    color: '#C62828',
-    letterSpacing: -0.31,
-    marginBottom: 12,
+    paddingHorizontal: 4,
   },
   emptyState: {
     paddingVertical: 60,
@@ -610,17 +627,21 @@ const styles = StyleSheet.create({
     color: '#CCCCCC',
   },
   categoryContainer: {
-    paddingHorizontal: 16,
     marginBottom: 24,
   },
+  categoryScrollContent: {
+    paddingHorizontal: 20,
+    gap: 10,
+  },
   categoryButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
     backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    marginRight: 8,
-    borderWidth: 0.6,
+    borderRadius: 12,
+    borderWidth: 1.8,
     borderColor: '#E0E0E0',
+    minWidth: 100,
+    alignItems: 'center',
   },
   categoryButtonActive: {
     backgroundColor: '#C62828',
@@ -630,85 +651,174 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#333333',
-    textAlign: 'center',
     letterSpacing: -0.31,
   },
   categoryTextActive: {
     color: '#FFFFFF',
   },
   allItemsContainer: {
-    paddingHorizontal: 16,
-    paddingBottom: 100,
+    paddingHorizontal: 20,
+    paddingBottom: 120,
   },
-  allItemsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  verticalItemsList: {
     gap: 12,
-    justifyContent: 'space-between',
   },
-  allItemCard: {
-    width: '48%',
+  verticalItemCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 0.6,
     borderColor: '#E0E0E0',
-    padding: 12.6,
-    paddingBottom: 0.6,
+    padding: 16,
   },
-  allItemName: {
+  outOfStockCard: {
+    backgroundColor: '#F5F5F5',
+    opacity: 0.7,
+  },
+  itemInfoSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  itemImageSmall: {
+    width: 60,
+    height: 60,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  itemDetails: {
+    flex: 1,
+  },
+  itemNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  verticalItemName: {
     fontSize: 18,
     fontWeight: '600',
     color: '#333333',
-    marginBottom: 4,
     letterSpacing: -0.44,
+    flex: 1,
   },
-  allItemPrice: {
-    fontSize: 16,
-    fontWeight: '400',
+  vegBadge: {
+    width: 18,
+    height: 18,
+    borderWidth: 1.5,
+    borderColor: '#4CAF50',
+    borderRadius: 3,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  nonVegBadge: {
+    borderColor: '#D32F2F',
+  },
+  vegDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#4CAF50',
+  },
+  nonVegDot: {
+    backgroundColor: '#D32F2F',
+  },
+  itemCategory: {
+    fontSize: 13,
+    color: '#999999',
+    marginBottom: 6,
+  },
+  verticalItemPrice: {
+    fontSize: 18,
+    fontWeight: '700',
     color: '#C62828',
     letterSpacing: -0.31,
-    marginBottom: 8,
   },
-  addButtonSmall: {
-    backgroundColor: '#C62828',
-    borderRadius: 6,
-    paddingVertical: 6,
+  outOfStockText: {
+    color: '#999999',
+  },
+  itemActionsSection: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 4,
+    gap: 8,
   },
-  addButtonSmallText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  quantityControlSmall: {
+  stockButton: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
     backgroundColor: '#F5F5F5',
-    borderRadius: 6,
-    padding: 4,
-    marginTop: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
   },
-  quantityButtonSmall: {
-    width: 24,
-    height: 24,
+  stockButtonActive: {
+    backgroundColor: '#FF6B6B',
+    borderColor: '#FF6B6B',
+  },
+  stockButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666666',
+  },
+  stockButtonTextActive: {
+    color: '#FFFFFF',
+  },
+  editButton: {
+    width: 44,
+    height: 44,
+    backgroundColor: '#FFF5F5',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#C62828',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addButton: {
+    width: 80,
+    paddingVertical: 10,
     backgroundColor: '#C62828',
-    borderRadius: 4,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  quantityButtonTextSmall: {
-    fontSize: 14,
+  addButtonText: {
+    fontSize: 15,
     fontWeight: '600',
     color: '#FFFFFF',
   },
-  quantityTextSmall: {
-    fontSize: 14,
+  quantityControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 10,
+    padding: 4,
+    gap: 8,
+    minWidth: 100,
+  },
+  quantityButton: {
+    width: 32,
+    height: 32,
+    backgroundColor: '#C62828',
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quantityButtonText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  quantityText: {
+    fontSize: 16,
     fontWeight: '600',
     color: '#333333',
-    marginHorizontal: 12,
-    minWidth: 20,
+    minWidth: 24,
     textAlign: 'center',
   },
   cartFooter: {

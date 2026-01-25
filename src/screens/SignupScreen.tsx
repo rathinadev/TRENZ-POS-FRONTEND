@@ -67,16 +67,13 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ navigation }) => {
       return false;
     }
 
-    if (!email.trim()) {
-      Alert.alert('Error', 'Please enter email');
-      return false;
-    }
-
-    // Email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      Alert.alert('Error', 'Please enter a valid email address');
-      return false;
+    // Email validation (only if provided - now optional)
+    if (email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        Alert.alert('Error', 'Please enter a valid email address');
+        return false;
+      }
     }
 
     if (!phone.trim()) {
@@ -89,16 +86,13 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ navigation }) => {
       return false;
     }
 
-    if (!gstNumber.trim()) {
-      Alert.alert('Error', 'Please enter GST number');
-      return false;
-    }
-
-    // GST format validation (basic check)
-    const gstRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$/;
-    if (!gstRegex.test(gstNumber.trim())) {
-      Alert.alert('Error', 'Please enter a valid GST number (e.g., 29ABCDE1234F1Z5)');
-      return false;
+    // GST format validation (only if provided - now optional)
+    if (gstNumber.trim()) {
+      const gstRegex = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$/;
+      if (!gstRegex.test(gstNumber.trim())) {
+        Alert.alert('Error', 'Please enter a valid GST number (e.g., 29ABCDE1234F1Z5)');
+        return false;
+      }
     }
 
     if (!password) {
@@ -129,13 +123,13 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ navigation }) => {
     try {
       const result = await register({
         username: username.trim(),
-        email: email.trim(),
+        email: email.trim() || undefined, // Optional field
         password,
         password_confirm: confirmPassword,
         business_name: businessName.trim(),
         phone: phone.trim(),
         address: address.trim(),
-        gst_no: gstNumber.trim(), // REQUIRED field
+        gst_no: gstNumber.trim() || undefined, // Optional field
       });
 
       if (result.success) {
@@ -227,10 +221,10 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ navigation }) => {
 
             {/* Email */}
             <View style={styles.inputContainer}>
-              <Text style={styles.label}>Email *</Text>
+              <Text style={styles.label}>Email (Optional)</Text>
               <TextInput
                 style={styles.input}
-                placeholder="Enter email"
+                placeholder="Enter email (optional)"
                 placeholderTextColor="#999999"
                 value={email}
                 onChangeText={setEmail}
@@ -255,7 +249,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ navigation }) => {
 
             {/* GST Number */}
             <View style={styles.inputContainer}>
-              <Text style={styles.label}>GST Number *</Text>
+              <Text style={styles.label}>GST Number (Optional)</Text>
               <TextInput
                 style={styles.input}
                 placeholder="Enter GST number (e.g., 29ABCDE1234F1Z5)"
@@ -265,7 +259,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ navigation }) => {
                 autoCapitalize="characters"
                 editable={!isLoading}
               />
-              <Text style={styles.helperText}>Required for password recovery</Text>
+              <Text style={styles.helperText}>GST number can be used for password recovery if provided</Text>
             </View>
 
             {/* Address */}

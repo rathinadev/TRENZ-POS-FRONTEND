@@ -17,6 +17,7 @@ import DownloadingSummaryScreen from '../screens/DownloadingSummaryScreen';
 import BillSummaryScreen from '../screens/BillSummaryScreen';
 import SaveSuccessScreen from '../screens/SaveSuccessScreen';
 import SelectSummaryDateScreen from '../screens/SelectSummaryDateScreen';
+import BillHistoryScreen from '../screens/BillHistoryScreen';
 
 // Billing screens
 import BillingScreen from '../screens/BillingScreen';
@@ -141,6 +142,11 @@ const AppNavigator: React.FC = () => {
       <Stack.Screen 
         name="SaveSuccess" 
         component={SaveSuccessScreen}
+        options={{ animation: 'slide_from_right', animationDuration: 300 }}
+      />
+      <Stack.Screen 
+        name="BillHistory" 
+        component={BillHistoryScreen}
         options={{ animation: 'slide_from_right', animationDuration: 300 }}
       />
 

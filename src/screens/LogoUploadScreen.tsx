@@ -17,6 +17,8 @@ import { RootStackParamList } from '../types/business.types';
 import Icon from 'react-native-vector-icons/Ionicons';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { getBusinessSettings, saveBusinessSettings } from '../services/storage';
+import { getVendorProfile, updateVendorProfile } from '../services/auth';
+import { getImageSource } from '../utils/imageCache';
 
 type LogoUploadScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'LogoUpload'>;
@@ -55,10 +57,24 @@ const LogoUploadScreen: React.FC<LogoUploadScreenProps> = ({ navigation }) => {
   const loadLogo = async () => {
     try {
       setIsLoading(true);
-      const settings = await getBusinessSettings();
       
-      if (settings && settings.logo_path) {
-        setLogoUri(settings.logo_path);
+      // Try to get logo from vendor profile
+      const vendorProfile = await getVendorProfile();
+      
+      if (vendorProfile && vendorProfile.logo_url) {
+        // Try to get cached local path first
+        const localImage = await getImageSource('vendor', vendorProfile.id, vendorProfile.logo_url);
+        if (localImage) {
+          setLogoUri(localImage.uri);
+        } else {
+          setLogoUri(vendorProfile.logo_url);
+        }
+      } else {
+        // Fallback to business settings
+        const settings = await getBusinessSettings();
+        if (settings && settings.logo_path) {
+          setLogoUri(settings.logo_path);
+        }
       }
     } catch (error) {
       console.error('Failed to load logo:', error);
@@ -72,7 +88,7 @@ const LogoUploadScreen: React.FC<LogoUploadScreenProps> = ({ navigation }) => {
     try {
       const result = await launchImageLibrary({
         mediaType: 'photo',
-        quality: 1,
+        quality: 0.8,
         selectionLimit: 1,
       });
 
@@ -81,12 +97,29 @@ const LogoUploadScreen: React.FC<LogoUploadScreenProps> = ({ navigation }) => {
         if (selectedImage.uri) {
           setIsSaving(true);
           
-          // Save to database
+          // Create FormData for multipart upload (React Native has global FormData)
+          const formData = new FormData();
+          
+          formData.append('logo', {
+            uri: selectedImage.uri,
+            type: selectedImage.type || 'image/jpeg',
+            name: selectedImage.fileName || 'logo.jpg',
+          } as any);
+          
+          // Upload via API
+          const updatedProfile = await updateVendorProfile(formData);
+          
+          // Update local display
+          if (updatedProfile.logo_url) {
+            setLogoUri(updatedProfile.logo_url);
+          } else {
+            setLogoUri(selectedImage.uri);
+          }
+          
+          // Also save to business settings for offline access
           await saveBusinessSettings({
             logo_path: selectedImage.uri,
           });
-
-          setLogoUri(selectedImage.uri);
           
           Alert.alert('Success', 'Logo updated successfully!');
         }

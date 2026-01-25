@@ -193,11 +193,94 @@ const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => 
             Set a default GST percentage for all items
           </Text>
 
+          {/* Quick Select Buttons */}
+          <View style={styles.gstPresetsContainer}>
+            <TouchableOpacity
+              style={[
+                styles.gstPresetButton,
+                gstPercent === '0' && styles.gstPresetButtonSelected,
+              ]}
+              onPress={() => !isSaving && setGstPercent('0')}
+              activeOpacity={0.9}
+              disabled={isSaving}
+            >
+              <Text
+                style={[
+                  styles.gstPresetButtonText,
+                  gstPercent === '0' && styles.gstPresetButtonTextSelected,
+                ]}
+              >
+                0%
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.gstPresetButton,
+                gstPercent === '5' && styles.gstPresetButtonSelected,
+              ]}
+              onPress={() => !isSaving && setGstPercent('5')}
+              activeOpacity={0.9}
+              disabled={isSaving}
+            >
+              <Text
+                style={[
+                  styles.gstPresetButtonText,
+                  gstPercent === '5' && styles.gstPresetButtonTextSelected,
+                ]}
+              >
+                5%
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.gstPresetButton,
+                gstPercent === '8' && styles.gstPresetButtonSelected,
+              ]}
+              onPress={() => !isSaving && setGstPercent('8')}
+              activeOpacity={0.9}
+              disabled={isSaving}
+            >
+              <Text
+                style={[
+                  styles.gstPresetButtonText,
+                  gstPercent === '8' && styles.gstPresetButtonTextSelected,
+                ]}
+              >
+                8%
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.gstPresetButton,
+                gstPercent === '18' && styles.gstPresetButtonSelected,
+              ]}
+              onPress={() => !isSaving && setGstPercent('18')}
+              activeOpacity={0.9}
+              disabled={isSaving}
+            >
+              <Text
+                style={[
+                  styles.gstPresetButtonText,
+                  gstPercent === '18' && styles.gstPresetButtonTextSelected,
+                ]}
+              >
+                18%
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Custom Input */}
+          <Text style={styles.customLabel}>Or enter custom percentage:</Text>
           <View style={styles.percentInputContainer}>
             <TextInput
               style={styles.percentInput}
               value={gstPercent}
               onChangeText={setGstPercent}
+              placeholder="Enter custom GST %"
+              placeholderTextColor="#999999"
               keyboardType="numeric"
               maxLength={5}
               editable={!isSaving}
@@ -523,6 +606,42 @@ const styles = StyleSheet.create({
     color: '#999999',
     letterSpacing: -0.31,
     lineHeight: 24,
+  },
+  gstPresetsContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  gstPresetButton: {
+    flex: 1,
+    height: 48,
+    borderWidth: 1.81,
+    borderColor: '#E0E0E0',
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gstPresetButtonSelected: {
+    borderColor: '#C62828',
+    backgroundColor: '#FFF5F5',
+  },
+  gstPresetButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666666',
+    letterSpacing: -0.31,
+    lineHeight: 24,
+  },
+  gstPresetButtonTextSelected: {
+    color: '#C62828',
+  },
+  customLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#666666',
+    marginTop: 16,
+    marginBottom: 8,
   },
   percentInputContainer: {
     flexDirection: 'row',

@@ -9,6 +9,8 @@ import {
   Animated,
   TextInput,
   ActivityIndicator,
+  Keyboard,
+  TouchableWithoutFeedback
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import CalenderIcon from '../assets/icons/CalenderIcon.svg';
@@ -19,11 +21,15 @@ type SelectSummaryDateScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'SelectSummaryDate'>;
 };
 
-type DateRangeOption = 'today' | 'yesterday' | 'last7days' | 'custom';
+// Define the available units
+type TimeUnit = 'days' | 'weeks' | 'months' | 'years';
 
 const SelectSummaryDateScreen: React.FC<SelectSummaryDateScreenProps> = ({ navigation }) => {
-  const [selectedRange, setSelectedRange] = useState<DateRangeOption | null>(null);
-  const [customDays, setCustomDays] = useState('');
+  // State for the number input
+  const [amount, setAmount] = useState('');
+  // State for the selected unit (default to days)
+  const [selectedUnit, setSelectedUnit] = useState<TimeUnit>('days');
+  
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -57,76 +63,114 @@ const SelectSummaryDateScreen: React.FC<SelectSummaryDateScreenProps> = ({ navig
       const settings = await getBusinessSettings();
       
       if (settings) {
-        // Load last selected date range preference
-        if (settings.last_summary_range) {
-          setSelectedRange(settings.last_summary_range as DateRangeOption);
+        // Restore last used amount
+        if (settings.last_summary_custom_amount) {
+          setAmount(settings.last_summary_custom_amount.toString());
         }
-        
-        // Load last custom days value
-        if (settings.last_summary_custom_days) {
-          setCustomDays(settings.last_summary_custom_days.toString());
+        // Restore last used unit
+        if (settings.last_summary_custom_unit) {
+          setSelectedUnit(settings.last_summary_custom_unit as TimeUnit);
         }
       }
     } catch (error) {
       console.error('Failed to load summary preferences:', error);
-      // Continue with defaults
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleRangeSelect = (range: DateRangeOption) => {
-    setSelectedRange(range);
-    if (range !== 'custom') {
-      setCustomDays('');
+  const calculateDateRange = () => {
+    const numAmount = parseInt(amount, 10);
+    if (!numAmount || isNaN(numAmount)) return null;
+
+    const endDate = new Date();
+    const startDate = new Date();
+
+    // Calculate start date based on unit
+    switch (selectedUnit) {
+      case 'days':
+        startDate.setDate(endDate.getDate() - numAmount);
+        break;
+      case 'weeks':
+        startDate.setDate(endDate.getDate() - (numAmount * 7));
+        break;
+      case 'months':
+        startDate.setMonth(endDate.getMonth() - numAmount);
+        break;
+      case 'years':
+        startDate.setFullYear(endDate.getFullYear() - numAmount);
+        break;
     }
+
+    return {
+      start_date: startDate.toISOString(),
+      end_date: endDate.toISOString(),
+      label: `Last ${numAmount} ${selectedUnit}`
+    };
   };
 
   const handleApply = async () => {
     try {
       setIsSaving(true);
+      const rangeData = calculateDateRange();
+      
+      if (!rangeData) {
+        setIsSaving(false);
+        return;
+      }
 
-      // Save user's preference to database
-      const saveData: {
-        last_summary_range: string;
-        last_summary_custom_days?: number;
-        last_summary_date: string;
-      } = {
-        last_summary_range: selectedRange || 'today',
+      // Save user's preference to local storage
+      const saveData = {
+        last_summary_custom_amount: parseInt(amount, 10),
+        last_summary_custom_unit: selectedUnit,
         last_summary_date: new Date().toISOString(),
       };
 
-      // Save custom days if applicable
-      if (selectedRange === 'custom' && customDays) {
-        saveData.last_summary_custom_days = parseInt(customDays, 10);
-      }
-
       await saveBusinessSettings(saveData);
 
-      // Navigate to downloading screen
+      // Navigate to downloading screen with the calculated dates
+      // NOTE: We pass the start/end ISO strings so the API can use them directly
       navigation.navigate('DownloadingSummary', {
-        dateRange: selectedRange || 'today',
-        customDays: customDays || undefined,
+        dateRange: 'custom',
+        startDate: rangeData.start_date,
+        endDate: rangeData.end_date,
+        displayLabel: rangeData.label,
+        customDays: calculateDaysDiff(rangeData.start_date), // Fallback for screens needing just day count
       });
+
     } catch (error) {
       console.error('Failed to save summary preferences:', error);
-      // Continue with navigation even if save fails
-      navigation.navigate('DownloadingSummary', {
-        dateRange: selectedRange || 'today',
-        customDays: customDays || undefined,
-      });
+      // Proceed even if save fails
+      const rangeData = calculateDateRange();
+      if (rangeData) {
+        navigation.navigate('DownloadingSummary', {
+          dateRange: 'custom',
+          startDate: rangeData.start_date,
+          endDate: rangeData.end_date,
+          displayLabel: rangeData.label,
+        });
+      }
     } finally {
       setIsSaving(false);
     }
   };
 
-  const isApplyEnabled = selectedRange !== null && (selectedRange !== 'custom' || customDays !== '');
+  // Helper to approximate days for legacy support
+  const calculateDaysDiff = (startDateStr: string) => {
+    const start = new Date(startDateStr);
+    const end = new Date();
+    const diffTime = Math.abs(end.getTime() - start.getTime());
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+  };
 
   const getSummaryText = () => {
-    if (selectedRange === 'custom' && customDays) {
-      return `Summary will include last ${customDays} days`;
-    }
-    return '';
+    if (!amount) return '';
+    const num = parseInt(amount, 10);
+    if (isNaN(num)) return '';
+    
+    // Singular/Plural handling
+    const unitLabel = num === 1 ? selectedUnit.slice(0, -1) : selectedUnit;
+    return `Summary will include data for the last ${num} ${unitLabel}`;
   };
 
   if (isLoading) {
@@ -138,234 +182,125 @@ const SelectSummaryDateScreen: React.FC<SelectSummaryDateScreenProps> = ({ navig
     );
   }
 
+  const isApplyEnabled = amount !== '' && parseInt(amount, 10) > 0;
+
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+      <View style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
 
-      {/* Header */}
-      <Animated.View
-        style={[
-          styles.header,
-          {
-            opacity: fadeAnim,
-            transform: [{ translateY: slideAnim }],
-          },
-        ]}
-      >
-        <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => navigation.goBack()}
-          activeOpacity={0.7}
+        {/* Header */}
+        <Animated.View
+          style={[
+            styles.header,
+            {
+              opacity: fadeAnim,
+              transform: [{ translateY: slideAnim }],
+            },
+          ]}
         >
-          <Text style={styles.backArrow}>←</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => navigation.goBack()}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.backArrow}>←</Text>
+          </TouchableOpacity>
 
-        <View style={styles.headerText}>
-          <Text style={styles.title}>Select Summary Date</Text>
-          <Text style={styles.subtitle}>Choose date range for bill summary</Text>
-        </View>
-      </Animated.View>
-
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-      >
-        {/* Calendar Icon */}
-        <View style={styles.calendarIconContainer}>
-          <View style={styles.calendarIcon}>
-            <CalenderIcon width={40} height={40} />
+          <View style={styles.headerText}>
+            <Text style={styles.title}>Custom Date Range</Text>
+            <Text style={styles.subtitle}>Define your specific timeline</Text>
           </View>
-        </View>
+        </Animated.View>
 
-        {/* Date Range Options */}
-        <View style={styles.optionsContainer}>
-          {/* Today */}
-          <TouchableOpacity
-            style={[
-              styles.optionButton,
-              selectedRange === 'today' && styles.optionButtonSelected,
-            ]}
-            onPress={() => handleRangeSelect('today')}
-            activeOpacity={0.9}
-            disabled={isSaving}
-          >
-            <View
-              style={[
-                styles.radioOuter,
-                selectedRange === 'today' && styles.radioOuterSelected,
-              ]}
-            >
-              {selectedRange === 'today' && <View style={styles.radioInner} />}
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Calendar Icon */}
+          <View style={styles.calendarIconContainer}>
+            <View style={styles.calendarIcon}>
+              <CalenderIcon width={40} height={40} />
             </View>
+          </View>
 
-            <View style={styles.optionTextContainer}>
-              <Text style={[styles.optionTitle, selectedRange === 'today' && styles.optionTitleSelected]}>
-                Today
-              </Text>
-              <Text style={styles.optionSubtitle}>Current day summary</Text>
+          {/* Unit Selection Pills */}
+          <View style={styles.unitContainer}>
+            <Text style={styles.sectionLabel}>Select Unit</Text>
+            <View style={styles.pillsRow}>
+              {(['days', 'weeks', 'months', 'years'] as TimeUnit[]).map((unit) => (
+                <TouchableOpacity
+                  key={unit}
+                  style={[
+                    styles.pill,
+                    selectedUnit === unit && styles.pillSelected
+                  ]}
+                  onPress={() => setSelectedUnit(unit)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[
+                    styles.pillText,
+                    selectedUnit === unit && styles.pillTextSelected
+                  ]}>
+                    {unit.charAt(0).toUpperCase() + unit.slice(1)}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
+          </View>
 
-            <Text
-              style={[
-                styles.arrowIcon,
-                selectedRange === 'today' && styles.arrowIconSelected,
-              ]}
-            >
-              ›
-            </Text>
-          </TouchableOpacity>
-
-          {/* Yesterday */}
-          <TouchableOpacity
-            style={[
-              styles.optionButton,
-              selectedRange === 'yesterday' && styles.optionButtonSelected,
-            ]}
-            onPress={() => handleRangeSelect('yesterday')}
-            activeOpacity={0.9}
-            disabled={isSaving}
-          >
-            <View
-              style={[
-                styles.radioOuter,
-                selectedRange === 'yesterday' && styles.radioOuterSelected,
-              ]}
-            >
-              {selectedRange === 'yesterday' && <View style={styles.radioInner} />}
-            </View>
-
-            <View style={styles.optionTextContainer}>
-              <Text style={[styles.optionTitle, selectedRange === 'yesterday' && styles.optionTitleSelected]}>
-                Yesterday
-              </Text>
-              <Text style={styles.optionSubtitle}>Previous day summary</Text>
-            </View>
-
-            <Text
-              style={[
-                styles.arrowIcon,
-                selectedRange === 'yesterday' && styles.arrowIconSelected,
-              ]}
-            >
-              ›
-            </Text>
-          </TouchableOpacity>
-
-          {/* Last 7 Days */}
-          <TouchableOpacity
-            style={[
-              styles.optionButton,
-              selectedRange === 'last7days' && styles.optionButtonSelected,
-            ]}
-            onPress={() => handleRangeSelect('last7days')}
-            activeOpacity={0.9}
-            disabled={isSaving}
-          >
-            <View
-              style={[
-                styles.radioOuter,
-                selectedRange === 'last7days' && styles.radioOuterSelected,
-              ]}
-            >
-              {selectedRange === 'last7days' && <View style={styles.radioInner} />}
-            </View>
-
-            <View style={styles.optionTextContainer}>
-              <Text style={[styles.optionTitle, selectedRange === 'last7days' && styles.optionTitleSelected]}>
-                Last 7 Days
-              </Text>
-              <Text style={styles.optionSubtitle}>Weekly summary</Text>
-            </View>
-
-            <Text
-              style={[
-                styles.arrowIcon,
-                selectedRange === 'last7days' && styles.arrowIconSelected,
-              ]}
-            >
-              ›
-            </Text>
-          </TouchableOpacity>
-
-          {/* Custom Range */}
-          <TouchableOpacity
-            style={[
-              styles.optionButton,
-              selectedRange === 'custom' && styles.optionButtonSelected,
-            ]}
-            onPress={() => handleRangeSelect('custom')}
-            activeOpacity={0.9}
-            disabled={isSaving}
-          >
-            <View
-              style={[
-                styles.radioOuter,
-                selectedRange === 'custom' && styles.radioOuterSelected,
-              ]}
-            >
-              {selectedRange === 'custom' && <View style={styles.radioInner} />}
-            </View>
-
-            <View style={styles.optionTextContainer}>
-              <Text style={[styles.optionTitle, selectedRange === 'custom' && styles.optionTitleSelected]}>
-                Custom Range
-              </Text>
-              <Text style={styles.optionSubtitle}>Choose number of days</Text>
-            </View>
-
-            <Text
-              style={[
-                styles.arrowIcon,
-                selectedRange === 'custom' && styles.arrowIconSelected,
-              ]}
-            >
-              ›
-            </Text>
-          </TouchableOpacity>
-
-          {/* Custom Input */}
-          {selectedRange === 'custom' && (
-            <View style={styles.customInputContainer}>
-              <Text style={styles.inputLabel}>Enter number of days</Text>
-              <View style={styles.inputRow}>
+          {/* Input Section */}
+          <View style={styles.inputSection}>
+             <Text style={styles.sectionLabel}>Enter Duration</Text>
+             <View style={styles.customInputContainer}>
                 <TextInput
                   style={styles.numberInput}
-                  value={customDays}
-                  onChangeText={setCustomDays}
-                  placeholder="5"
-                  placeholderTextColor="rgba(51, 51, 51, 0.5)"
+                  value={amount}
+                  onChangeText={setAmount}
+                  placeholder="e.g. 1, 3, 6"
+                  placeholderTextColor="rgba(51, 51, 51, 0.4)"
                   keyboardType="numeric"
                   editable={!isSaving}
+                  maxLength={3}
                 />
-                <Text style={styles.daysLabel}>Days</Text>
-              </View>
-              {customDays && (
-                <Text style={styles.summaryText}>{getSummaryText()}</Text>
-              )}
+                <Text style={styles.inputSuffix}>
+                  {selectedUnit.toUpperCase()}
+                </Text>
             </View>
-          )}
-        </View>
-      </ScrollView>
+            
+            {/* Dynamic Summary Text */}
+            <View style={styles.summaryTextContainer}>
+               {amount ? (
+                 <Text style={styles.summaryText}>{getSummaryText()}</Text>
+               ) : (
+                 <Text style={styles.placeholderText}>Enter a number above to see details</Text>
+               )}
+            </View>
+          </View>
 
-      {/* Apply Button */}
-      <View style={styles.footer}>
-        <TouchableOpacity
-          style={[
-            styles.applyButton,
-            (!isApplyEnabled || isSaving) && styles.applyButtonDisabled,
-          ]}
-          onPress={handleApply}
-          disabled={!isApplyEnabled || isSaving}
-          activeOpacity={0.9}
-        >
-          {isSaving ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
-          ) : (
-            <Text style={styles.applyButtonText}>Apply</Text>
-          )}
-        </TouchableOpacity>
+        </ScrollView>
+
+        {/* Apply Button */}
+        <View style={styles.footer}>
+          <TouchableOpacity
+            style={[
+              styles.applyButton,
+              (!isApplyEnabled || isSaving) && styles.applyButtonDisabled,
+            ]}
+            onPress={handleApply}
+            disabled={!isApplyEnabled || isSaving}
+            activeOpacity={0.9}
+          >
+            {isSaving ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Text style={styles.applyButtonText}>Apply Filter</Text>
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
+    </TouchableWithoutFeedback>
   );
 };
 
@@ -401,35 +336,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   backArrow: {
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '600',
     color: '#C62828',
-    lineHeight: 21,
   },
   headerText: {
     flex: 1,
   },
   title: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: '700',
     color: '#333333',
-    letterSpacing: 0.38,
-    lineHeight: 42,
+    lineHeight: 32,
   },
   subtitle: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#999999',
-    letterSpacing: -0.31,
-    lineHeight: 24,
   },
   scrollContent: {
-    padding: 0,
+    padding: 20,
     paddingBottom: 100,
-    alignItems: 'center',
-    gap: 22,
+    gap: 32,
   },
   calendarIconContainer: {
-    marginTop: 22,
+    alignItems: 'center',
+    marginTop: 10,
+    marginBottom: 10,
   },
   calendarIcon: {
     width: 80,
@@ -438,137 +370,95 @@ const styles = StyleSheet.create({
     borderRadius: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    position: 'relative',
   },
-  calendarTop: {
-    position: 'absolute',
-    top: 18,
-    left: 20,
-    right: 20,
-    height: 12,
-    borderWidth: 3.33,
-    borderColor: '#C62828',
-    borderBottomWidth: 0,
-  },
-  calendarBottom: {
-    position: 'absolute',
-    bottom: 18,
-    left: 20,
-    right: 20,
-    height: 22,
-    borderWidth: 3.33,
-    borderColor: '#C62828',
-  },
-  optionsContainer: {
-    paddingHorizontal: 16,
+  
+  // Unit Selection Styles
+  unitContainer: {
     gap: 12,
-    width: '100%',
   },
-  optionButton: {
+  sectionLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666666',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  pillsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.81,
-    borderColor: '#E0E0E0',
-    borderRadius: 16,
-    gap: 12,
+    justifyContent: 'space-between',
+    gap: 8,
   },
-  optionButtonSelected: {
+  pill: {
+    flex: 1,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 12,
+    backgroundColor: '#F5F5F5',
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
+  },
+  pillSelected: {
     backgroundColor: '#FEF2F2',
     borderColor: '#C62828',
   },
-  radioOuter: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 1.81,
-    borderColor: '#999999',
-    justifyContent: 'center',
-    alignItems: 'center',
+  pillText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666666',
   },
-  radioOuterSelected: {
-    borderColor: '#C62828',
+  pillTextSelected: {
+    color: '#C62828',
   },
-  radioInner: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#C62828',
-  },
-  optionTextContainer: {
-    flex: 1,
+
+  // Input Section Styles
+  inputSection: {
     gap: 4,
   },
-  optionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333333',
-    letterSpacing: -0.31,
-    lineHeight: 24,
-  },
-  optionTitleSelected: {
-    color: '#C62828',
-  },
-  optionSubtitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#999999',
-    letterSpacing: -0.15,
-    lineHeight: 20,
-  },
-  arrowIcon: {
-    fontSize: 20,
-    color: '#999999',
-    lineHeight: 20,
-  },
-  arrowIconSelected: {
-    color: '#C62828',
-  },
   customInputContainer: {
-    backgroundColor: '#F2F2F2',
-    borderWidth: 0.6,
-    borderColor: '#E0E0E0',
-    borderRadius: 16,
-    padding: 21,
-    gap: 12,
-  },
-  inputLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#666666',
-    letterSpacing: -0.15,
-    lineHeight: 20,
-  },
-  inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    backgroundColor: '#F9F9F9',
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    height: 64,
   },
   numberInput: {
     flex: 1,
-    height: 52,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.81,
-    borderColor: '#E0E0E0',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    fontSize: 16,
+    fontSize: 24,
+    fontWeight: '700',
     color: '#333333',
-    letterSpacing: -0.31,
+    padding: 0,
   },
-  daysLabel: {
+  inputSuffix: {
     fontSize: 16,
-    color: '#666666',
-    letterSpacing: -0.31,
+    fontWeight: '700',
+    color: '#C62828',
+    opacity: 0.8,
+  },
+  summaryTextContainer: {
+    marginTop: 12,
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
   },
   summaryText: {
     fontSize: 15,
-    color: '#999999',
+    color: '#333333',
+    fontWeight: '500',
     textAlign: 'center',
-    letterSpacing: -0.31,
-    lineHeight: 24,
   },
+  placeholderText: {
+    fontSize: 14,
+    color: '#999999',
+    fontStyle: 'italic',
+  },
+
+  // Footer Styles
   footer: {
     position: 'absolute',
     bottom: 0,
@@ -578,6 +468,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 0.6,
     borderTopColor: '#E0E0E0',
     padding: 16,
+    paddingBottom: 24,
   },
   applyButton: {
     height: 52,
@@ -585,20 +476,22 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.1,
-    shadowRadius: 15,
-    elevation: 5,
+    shadowColor: '#C62828',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   applyButtonDisabled: {
     backgroundColor: '#E0E0E0',
+    shadowOpacity: 0,
+    elevation: 0,
   },
   applyButtonText: {
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
-    letterSpacing: -0.31,
+    letterSpacing: 0.5,
   },
 });
 

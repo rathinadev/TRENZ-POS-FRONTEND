@@ -10,10 +10,13 @@ import {
   TextInput,
   Image,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/business.types';
 import { getBills, getItems, getCategories } from '../services/storage';
+import API from '../services/api';
+import { getNetworkStatus } from '../services/sync';
 
 type DashboardScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'Dashboard'>;
@@ -25,6 +28,17 @@ interface DashboardData {
   totalSales: number;
   totalBills: number;
   avgBillValue: number;
+  gstBills: number;
+  nonGstBills: number;
+  totalTaxCollected: number;
+  paymentSplit: {
+    cash: { count: number; amount: number };
+    upi: { count: number; amount: number };
+    card: { count: number; amount: number };
+    credit: { count: number; amount: number };
+    other: { count: number; amount: number };
+  };
+  pendingPayments: number;
   mostSoldProduct: {
     name: string;
     soldCount: number;
@@ -56,6 +70,17 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     totalSales: 0,
     totalBills: 0,
     avgBillValue: 0,
+    gstBills: 0,
+    nonGstBills: 0,
+    totalTaxCollected: 0,
+    paymentSplit: {
+      cash: { count: 0, amount: 0 },
+      upi: { count: 0, amount: 0 },
+      card: { count: 0, amount: 0 },
+      credit: { count: 0, amount: 0 },
+      other: { count: 0, amount: 0 },
+    },
+    pendingPayments: 0,
     mostSoldProduct: null,
     leastSoldProduct: null,
     mostSoldCategory: null,
@@ -83,7 +108,7 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   }, []);
 
   const calculateDateRange = (range: DateRange, days?: number) => {
-    const end = new Date();
+    let end = new Date();
     end.setHours(23, 59, 59, 999);
     
     let start = new Date();
@@ -117,12 +142,161 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
       const days = customDaysValue ? parseInt(customDaysValue, 10) : undefined;
       const dateRange = calculateDateRange(range, days);
 
-      // Load bills from database
+      // ONLINE-FIRST: Always try API first
+      const isOnline = await getNetworkStatus();
+      console.log('🌐 Online-First Mode: Network available:', isOnline);
+
+      if (isOnline) {
+        console.log('📡 Loading dashboard data from API (online-first)...');
+        try {
+          // Log request parameters
+          const startDate = dateRange.start.toISOString().split('T')[0];
+          const endDate = dateRange.end.toISOString().split('T')[0];
+          console.log('📊 Dashboard API Request - Date Range:', startDate, 'to', endDate);
+          
+          // Check token
+          const token = await import('../services/auth').then(m => m.getAuthToken());
+          console.log('🔑 Auth Token Present:', !!token);
+          
+          // Use API endpoints for accurate server-side data
+          const [stats, sales, itemsData, payments, tax, profit] = await Promise.all([
+            API.dashboard.getStats(),
+            API.dashboard.getSales({
+              start_date: startDate,
+              end_date: endDate,
+            }),
+            API.dashboard.getItems({
+              start_date: startDate,
+              end_date: endDate,
+            }),
+            API.dashboard.getPayments({
+              start_date: startDate,
+              end_date: endDate,
+            }),
+            API.dashboard.getTax({
+              start_date: startDate,
+              end_date: endDate,
+            }),
+            API.dashboard.getProfit({
+              start_date: startDate,
+              end_date: endDate,
+            }),
+          ]);
+
+          // Log raw API responses
+          console.log('📥 Dashboard API Responses:');
+          console.log('  Stats:', JSON.stringify(stats, null, 2));
+          console.log('  Sales:', JSON.stringify(sales, null, 2));
+          console.log('  Items:', JSON.stringify(itemsData, null, 2));
+          console.log('  Payments:', JSON.stringify(payments, null, 2));
+          console.log('  Tax:', JSON.stringify(tax, null, 2));
+          console.log('  Profit:', JSON.stringify(profit, null, 2));
+
+          // Transform API data to dashboard format
+          const paymentSplitData = stats.statistics?.payment_split || payments.payment_split || [];
+          const paymentSplitMap: DashboardData['paymentSplit'] = {
+            cash: { count: 0, amount: 0 },
+            upi: { count: 0, amount: 0 },
+            card: { count: 0, amount: 0 },
+            credit: { count: 0, amount: 0 },
+            other: { count: 0, amount: 0 },
+          };
+
+          // Map payment split from API
+          if (Array.isArray(paymentSplitData)) {
+            paymentSplitData.forEach((item: any) => {
+              const mode = item.payment_mode?.toLowerCase() || 'other';
+              if (mode in paymentSplitMap) {
+                paymentSplitMap[mode as keyof typeof paymentSplitMap] = {
+                  count: item.transaction_count || item.count || 0,
+                  amount: parseFloat(item.total_amount || item.amount || '0'),
+                };
+              }
+            });
+          } else if (paymentSplitData) {
+            // Handle object format from stats.statistics.payment_split
+            Object.keys(paymentSplitMap).forEach((mode) => {
+              const data = paymentSplitData[mode];
+              if (data) {
+                paymentSplitMap[mode as keyof typeof paymentSplitMap] = {
+                  count: data.count || 0,
+                  amount: parseFloat(data.amount || '0'),
+                };
+              }
+            });
+          }
+
+          // Calculate pending payments (credit bills)
+          const pendingPayments = paymentSplitMap.credit.amount;
+
+          const data: DashboardData = {
+            totalSales: parseFloat(sales.summary?.total_revenue || stats.statistics?.total_revenue || '0'),
+            totalBills: stats.statistics?.total_bills || stats.total_bills || 0,
+            avgBillValue: stats.avg_bill_value || (stats.total_bills > 0 ? parseFloat(stats.statistics?.total_revenue || '0') / stats.total_bills : 0),
+            gstBills: stats.statistics?.gst_bills || 0,
+            nonGstBills: stats.statistics?.non_gst_bills || 0,
+            totalTaxCollected: parseFloat(tax.summary?.total_tax_collected || '0'),
+            paymentSplit: paymentSplitMap,
+            pendingPayments,
+            mostSoldProduct: itemsData.most_sold && itemsData.most_sold.length > 0
+              ? {
+                  name: itemsData.most_sold[0].item_name || itemsData.most_sold[0].name,
+                  soldCount: parseInt(itemsData.most_sold[0].total_quantity || itemsData.most_sold[0].quantity_sold || '0'),
+                  category: itemsData.most_sold[0].category?.[0] || 'Unknown',
+                  image: itemsData.most_sold[0].image_url,
+                }
+              : null,
+            leastSoldProduct: itemsData.least_sold && itemsData.least_sold.length > 0
+              ? {
+                  name: itemsData.least_sold[0].item_name || itemsData.least_sold[0].name,
+                  soldCount: parseInt(itemsData.least_sold[0].total_quantity || itemsData.least_sold[0].quantity_sold || '0'),
+                  category: itemsData.least_sold[0].category?.[0] || 'Unknown',
+                  image: itemsData.least_sold[0].image_url,
+                }
+              : null,
+            mostSoldCategory: null, // API doesn't provide category breakdown
+            leastSoldCategory: null,
+          };
+
+          console.log('✅ Dashboard data loaded from API successfully');
+          console.log('📊 Final Dashboard Data:', {
+            totalSales: data.totalSales,
+            totalBills: data.totalBills,
+            avgBillValue: data.avgBillValue,
+            gstBills: data.gstBills,
+            nonGstBills: data.nonGstBills,
+            totalTaxCollected: data.totalTaxCollected,
+          });
+          
+          setDashboardData(data);
+          
+          // ONLINE-FIRST: No need to save to local, using live API data
+          console.log('💾 Using live API data (online-first mode)');
+          return;
+        } catch (apiError: any) {
+          console.error('❌ Dashboard API error:', apiError);
+          console.error('Error details:', {
+            message: apiError.message,
+            response: apiError.response?.data,
+            status: apiError.response?.status,
+            config: {
+              url: apiError.config?.url,
+              method: apiError.config?.method,
+              headers: apiError.config?.headers,
+            },
+          });
+          console.warn('⚠️ ONLINE-FIRST: API failed, falling back to local data');
+          // Fall through to local calculation
+        }
+      }
+
+      // FALLBACK: Local calculation (offline or API failed)
+      console.log('📴 Loading dashboard data from local storage (fallback)...');
       const allBills = await getBills();
       
       // Filter bills by date range
       const filteredBills = allBills.filter(bill => {
-        const billDate = new Date(bill.created_at);
+        const billDate = new Date(bill.created_at || bill.bill_date || bill.created_at);
         return billDate >= dateRange.start && billDate <= dateRange.end;
       });
 
@@ -141,6 +315,17 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         totalSales: 0,
         totalBills: 0,
         avgBillValue: 0,
+        gstBills: 0,
+        nonGstBills: 0,
+        totalTaxCollected: 0,
+        paymentSplit: {
+          cash: { count: 0, amount: 0 },
+          upi: { count: 0, amount: 0 },
+          card: { count: 0, amount: 0 },
+          credit: { count: 0, amount: 0 },
+          other: { count: 0, amount: 0 },
+        },
+        pendingPayments: 0,
         mostSoldProduct: null,
         leastSoldProduct: null,
         mostSoldCategory: null,
@@ -164,6 +349,36 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     
     // Average bill value
     const avgBillValue = totalBills > 0 ? Math.round(totalSales / totalBills) : 0;
+
+    // GST vs Non-GST bills
+    const gstBills = bills.filter(bill => bill.billing_mode === 'gst').length;
+    const nonGstBills = bills.filter(bill => bill.billing_mode === 'non_gst').length;
+
+    // Total tax collected
+    const totalTaxCollected = bills.reduce((sum, bill) => sum + (bill.total_tax || 0), 0);
+
+    // Payment split
+    const paymentSplit: DashboardData['paymentSplit'] = {
+      cash: { count: 0, amount: 0 },
+      upi: { count: 0, amount: 0 },
+      card: { count: 0, amount: 0 },
+      credit: { count: 0, amount: 0 },
+      other: { count: 0, amount: 0 },
+    };
+
+    bills.forEach(bill => {
+      const mode = (bill.payment_mode || 'cash').toLowerCase() as keyof typeof paymentSplit;
+      if (mode in paymentSplit) {
+        paymentSplit[mode].count++;
+        paymentSplit[mode].amount += bill.total_amount || 0;
+      } else {
+        paymentSplit.other.count++;
+        paymentSplit.other.amount += bill.total_amount || 0;
+      }
+    });
+
+    // Pending payments (credit bills)
+    const pendingPayments = paymentSplit.credit.amount;
     
     // Track product sales
     const productSales: { [key: string]: { name: string; count: number; categoryId: string; itemData: any } } = {};
@@ -257,6 +472,11 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
       totalSales,
       totalBills,
       avgBillValue,
+      gstBills,
+      nonGstBills,
+      totalTaxCollected,
+      paymentSplit,
+      pendingPayments,
       mostSoldProduct,
       leastSoldProduct,
       mostSoldCategory,
@@ -284,6 +504,36 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
 
   const handleDownloadSummary = () => {
     navigation.navigate('SelectSummaryDate');
+  };
+
+  const handleViewGSTBills = () => {
+    const dateRange = calculateDateRange(selectedRange, customDays ? parseInt(customDays) : undefined);
+    navigation.navigate('BillHistory', {
+      filterType: 'gst',
+      startDate: dateRange.start.toISOString(),
+      endDate: dateRange.end.toISOString(),
+      title: 'GST Bills',
+    });
+  };
+
+  const handleViewNonGSTBills = () => {
+    const dateRange = calculateDateRange(selectedRange, customDays ? parseInt(customDays) : undefined);
+    navigation.navigate('BillHistory', {
+      filterType: 'non_gst',
+      startDate: dateRange.start.toISOString(),
+      endDate: dateRange.end.toISOString(),
+      title: 'Non-GST Bills',
+    });
+  };
+
+  const handleViewAllBills = () => {
+    const dateRange = calculateDateRange(selectedRange, customDays ? parseInt(customDays) : undefined);
+    navigation.navigate('BillHistory', {
+      filterType: 'all',
+      startDate: dateRange.start.toISOString(),
+      endDate: dateRange.end.toISOString(),
+      title: 'All Bills',
+    });
   };
 
   const getDateRangeText = () => {
@@ -453,23 +703,159 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
 
         {hasData ? (
           <>
-            {/* Total Sales Card */}
-            <View style={styles.card}>
+            {/* Total Sales Card - Clickable */}
+            <TouchableOpacity 
+              style={styles.card}
+              onPress={handleViewAllBills}
+              activeOpacity={0.7}
+            >
               <Text style={styles.cardTitle}>Total Sales</Text>
               <Text style={styles.metricValue}>₹ {dashboardData.totalSales.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</Text>
-              <Text style={styles.metricSubtext}>Based on selected date range</Text>
-            </View>
+              <Text style={styles.viewDetailsText}>Tap to view all bills →</Text>
+            </TouchableOpacity>
 
-            {/* Total Bills Card */}
-            <View style={styles.card}>
+            {/* Total Bills Card - Clickable */}
+            <TouchableOpacity 
+              style={styles.card}
+              onPress={handleViewAllBills}
+              activeOpacity={0.7}
+            >
               <Text style={styles.cardTitle}>Total Bills</Text>
               <Text style={styles.metricValue}>{dashboardData.totalBills} Bills</Text>
-            </View>
+              <Text style={styles.viewDetailsText}>Tap to view all bills →</Text>
+            </TouchableOpacity>
 
-            {/* Average Bill Value Card */}
-            <View style={styles.card}>
+            {/* Average Bill Value Card - Clickable */}
+            <TouchableOpacity 
+              style={styles.card}
+              onPress={handleViewAllBills}
+              activeOpacity={0.7}
+            >
               <Text style={styles.cardTitle}>Average Bill Value</Text>
               <Text style={styles.metricValue}>₹ {dashboardData.avgBillValue}</Text>
+              <Text style={styles.viewDetailsText}>Tap to view all bills →</Text>
+            </TouchableOpacity>
+
+            {/* GST/Non-GST Bills Breakdown - Clickable */}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Bills Breakdown</Text>
+              <View style={styles.breakdownRow}>
+                <TouchableOpacity 
+                  style={styles.breakdownItem}
+                  onPress={handleViewGSTBills}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.breakdownLabel}>GST Bills</Text>
+                  <Text style={styles.breakdownValue}>{dashboardData.gstBills}</Text>
+                  <Text style={styles.viewDetailsTextSmall}>View →</Text>
+                </TouchableOpacity>
+                <View style={styles.breakdownDivider} />
+                <TouchableOpacity 
+                  style={styles.breakdownItem}
+                  onPress={handleViewNonGSTBills}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.breakdownLabel}>Non-GST Bills</Text>
+                  <Text style={styles.breakdownValue}>{dashboardData.nonGstBills}</Text>
+                  <Text style={styles.viewDetailsTextSmall}>View →</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Total Tax Collected - Clickable */}
+            {dashboardData.totalTaxCollected > 0 && (
+              <TouchableOpacity 
+                style={styles.card}
+                onPress={handleViewGSTBills}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.cardTitle}>Total Tax Collected</Text>
+                <Text style={styles.metricValue}>₹ {dashboardData.totalTaxCollected.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</Text>
+                <Text style={styles.viewDetailsText}>Tap to view GST bills →</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Payment Mode Split - Clickable */}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Payment Mode Split</Text>
+              <Text style={[styles.metricSubtext, {marginBottom: 10}]}>Tap any payment mode to view bills</Text>
+              <View style={styles.paymentGrid}>
+                {dashboardData.paymentSplit.cash.amount > 0 && (
+                  <TouchableOpacity 
+                    style={styles.paymentItem}
+                    onPress={handleViewAllBills}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.paymentMode}>Cash</Text>
+                    <Text style={styles.paymentAmount}>₹ {dashboardData.paymentSplit.cash.amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</Text>
+                    <Text style={styles.paymentCount}>{dashboardData.paymentSplit.cash.count} bills</Text>
+                  </TouchableOpacity>
+                )}
+                {dashboardData.paymentSplit.upi.amount > 0 && (
+                  <TouchableOpacity 
+                    style={styles.paymentItem}
+                    onPress={handleViewAllBills}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.paymentMode}>UPI</Text>
+                    <Text style={styles.paymentAmount}>₹ {dashboardData.paymentSplit.upi.amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</Text>
+                    <Text style={styles.paymentCount}>{dashboardData.paymentSplit.upi.count} bills</Text>
+                  </TouchableOpacity>
+                )}
+                {dashboardData.paymentSplit.card.amount > 0 && (
+                  <TouchableOpacity 
+                    style={styles.paymentItem}
+                    onPress={handleViewAllBills}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.paymentMode}>Card</Text>
+                    <Text style={styles.paymentAmount}>₹ {dashboardData.paymentSplit.card.amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</Text>
+                    <Text style={styles.paymentCount}>{dashboardData.paymentSplit.card.count} bills</Text>
+                  </TouchableOpacity>
+                )}
+                {dashboardData.paymentSplit.credit.amount > 0 && (
+                  <TouchableOpacity 
+                    style={styles.paymentItem}
+                    onPress={handleViewAllBills}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.paymentMode}>Credit</Text>
+                    <Text style={styles.paymentAmount}>₹ {dashboardData.paymentSplit.credit.amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</Text>
+                    <Text style={styles.paymentCount}>{dashboardData.paymentSplit.credit.count} bills</Text>
+                  </TouchableOpacity>
+                )}
+                {dashboardData.paymentSplit.other.amount > 0 && (
+                  <TouchableOpacity 
+                    style={styles.paymentItem}
+                    onPress={handleViewAllBills}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.paymentMode}>Other</Text>
+                    <Text style={styles.paymentAmount}>₹ {dashboardData.paymentSplit.other.amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</Text>
+                    <Text style={styles.paymentCount}>{dashboardData.paymentSplit.other.count} bills</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            {/* Pending Payments and Refunds - Clickable */}
+            {dashboardData.pendingPayments > 0 && (
+              <TouchableOpacity 
+                style={[styles.card, styles.warningCard]}
+                onPress={handleViewAllBills}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.cardTitle}>Pending Payments and Refunds</Text>
+                <Text style={styles.metricValue}>₹ {dashboardData.pendingPayments.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</Text>
+                <Text style={styles.viewDetailsText}>Tap to view all bills →</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Online Orders - Coming Soon */}
+            <View style={[styles.card, styles.infoCard]}>
+              <Text style={styles.cardTitle}>Online Orders</Text>
+              <Text style={styles.metricValue}>Coming Soon</Text>
+              <Text style={styles.metricSubtext}>Online order integration is not yet available in the backend API</Text>
             </View>
 
             {/* Most Sold Product Card */}
@@ -508,9 +894,9 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
 
             {/* Daily Bill Summary Card */}
             <View style={styles.summaryCard}>
-              <Text style={styles.cardTitle}>Daily Bill Summary</Text>
+              <Text style={styles.cardTitle}>Download Bill Summary</Text>
               <Text style={styles.summaryDescription}>
-                Download a summary of bills for the selected date
+                Download a summary of bills for the selected date range
               </Text>
               <TouchableOpacity
                 style={styles.downloadButton}
@@ -870,6 +1256,84 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     letterSpacing: -0.31,
     lineHeight: 24,
+  },
+  breakdownRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  breakdownItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  breakdownDivider: {
+    width: 1,
+    height: 40,
+    backgroundColor: '#E0E0E0',
+    marginHorizontal: 16,
+  },
+  breakdownLabel: {
+    fontSize: 14,
+    color: '#999999',
+    letterSpacing: -0.31,
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  breakdownValue: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#333333',
+    letterSpacing: -0.31,
+    lineHeight: 28,
+  },
+  viewDetailsText: {
+    fontSize: 12,
+    color: '#C62828',
+    marginTop: 8,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  viewDetailsTextSmall: {
+    fontSize: 11,
+    color: '#C62828',
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  paymentGrid: {
+    gap: 12,
+  },
+  paymentItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+  },
+  paymentMode: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333333',
+    letterSpacing: -0.31,
+    marginBottom: 4,
+  },
+  paymentAmount: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#C62828',
+    letterSpacing: -0.31,
+    marginBottom: 2,
+  },
+  paymentCount: {
+    fontSize: 12,
+    color: '#999999',
+    letterSpacing: -0.31,
+  },
+  warningCard: {
+    borderColor: '#FF9800',
+    borderWidth: 1,
+  },
+  infoCard: {
+    borderColor: '#2196F3',
+    borderWidth: 1,
+    backgroundColor: '#E3F2FD',
   },
 });
 

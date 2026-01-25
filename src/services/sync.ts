@@ -30,17 +30,62 @@ const executeSql = (sql: string, params: any[] = []): any[] => {
 // ==================== NETWORK STATUS ====================
 
 let isOnline = true;
+let offlineTimestamp: number | null = null;
+let syncTimeout: NodeJS.Timeout | null = null;
 
 export const initNetworkListener = () => {
   NetInfo.addEventListener(state => {
     const wasOffline = !isOnline;
+    const previousOnline = isOnline;
     isOnline = state.isConnected ?? false;
     
-    console.log(`Network status: ${isOnline ? 'Online' : 'Offline'}`);
+    console.log(`📶 Network status: ${isOnline ? '✅ Online' : '📴 Offline'}`);
     
+    // Track when we go offline
+    if (!isOnline && wasOffline === false) {
+      offlineTimestamp = Date.now();
+      console.log('📴 Going offline - tracking timestamp');
+    }
+    
+    // AUTO-SYNC: Only trigger when genuinely coming back online after being offline
     if (wasOffline && isOnline) {
-      console.log('Back online - triggering sync');
-      setTimeout(() => syncAll(), 1000);
+      const offlineDuration = offlineTimestamp ? Date.now() - offlineTimestamp : 0;
+      
+      console.log(`🔄 Network transition detected: offline → online`);
+      console.log(`   Offline duration: ${offlineDuration}ms`);
+      
+      // Only sync if we were offline for more than 3 seconds (prevents false triggers)
+      if (offlineDuration > 3000) {
+        console.log('🔄 AUTO-SYNC: Network genuinely restored - syncing all local changes to backend...');
+        
+        // Clear any pending sync timeout
+        if (syncTimeout) {
+          clearTimeout(syncTimeout);
+        }
+        
+        // Wait 2 seconds to ensure connection is stable
+        syncTimeout = setTimeout(async () => {
+          try {
+            const result = await syncAll();
+            
+            if (result.success) {
+              const total = result.categoriesSynced + result.itemsSynced + result.billsSynced + result.inventorySynced;
+              console.log(`✅ AUTO-SYNC: Successfully synced ${total} changes to backend`);
+              console.log(`   Categories: ${result.categoriesSynced}, Items: ${result.itemsSynced}, Bills: ${result.billsSynced}, Inventory: ${result.inventorySynced}`);
+            } else {
+              console.warn('⚠️ AUTO-SYNC: Sync completed with some errors');
+            }
+          } catch (error) {
+            console.error('❌ AUTO-SYNC: Failed to sync:', error);
+          } finally {
+            offlineTimestamp = null;
+          }
+        }, 2000);
+      } else {
+        console.log(`⏭️ AUTO-SYNC: Skipping sync - offline duration too short (${offlineDuration}ms < 3000ms)`);
+        console.log('   This was likely a false network state change, not a genuine disconnection');
+        offlineTimestamp = null;
+      }
     }
   });
 };
@@ -247,6 +292,9 @@ export const syncItems = async (): Promise<{ success: boolean; synced: number }>
     }
     
     if (response.items && response.items.length > 0) {
+      // Import image cache utility
+      const { cacheItemImage } = await import('../utils/imageCache');
+      
       for (const item of response.items) {
         executeSql(
           `UPDATE items 
@@ -254,6 +302,15 @@ export const syncItems = async (): Promise<{ success: boolean; synced: number }>
            WHERE id = ?`,
           [item.last_updated, item.image_url, new Date().toISOString(), item.id]
         );
+        
+        // Cache item image if available
+        if (item.image_url) {
+          try {
+            await cacheItemImage(item.id, item.image_url);
+          } catch (error) {
+            console.warn(`Failed to cache image for item ${item.id}:`, error);
+          }
+        }
       }
     }
     
@@ -283,23 +340,39 @@ export const syncBills = async (): Promise<{ success: boolean; synced: number }>
     
     console.log(`Syncing ${bills.length} bills...`);
     
-    const billPayload = bills.map(bill => ({
-      bill_data: {
+    // Transform bills to API format
+    const billPayload = bills.map(bill => {
+      const billItems = JSON.parse(bill.items);
+      
+      return {
+        invoice_number: bill.invoice_number || bill.bill_number,
         bill_id: bill.id,
-        bill_number: bill.bill_number,
-        items: JSON.parse(bill.items),
+        billing_mode: bill.billing_mode || 'gst',
+        restaurant_name: bill.restaurant_name || '',
+        address: bill.address || '',
+        gstin: bill.gstin || null,
+        fssai_license: bill.fssai_license || null,
+        bill_date: bill.bill_date || bill.created_at.split('T')[0],
+        items: billItems,
         subtotal: bill.subtotal,
-        tax_amount: bill.tax_amount,
-        discount_amount: bill.discount_amount,
-        total_amount: bill.total_amount,
-        payment_method: bill.payment_method,
-        customer_name: bill.customer_name,
-        customer_phone: bill.customer_phone,
-        notes: bill.notes,
+        discount_amount: bill.discount_amount || 0,
+        discount_percentage: bill.discount_percentage || 0,
+        cgst: bill.cgst_amount || 0,
+        sgst: bill.sgst_amount || 0,
+        igst: bill.igst_amount || 0,
+        total_tax: bill.total_tax || 0,
+        total: bill.total_amount,
+        payment_mode: bill.payment_mode || bill.payment_method || 'cash',
+        payment_reference: bill.payment_reference || null,
+        amount_paid: bill.amount_paid || bill.total_amount,
+        change_amount: bill.change_amount || 0,
+        customer_name: bill.customer_name || null,
+        customer_phone: bill.customer_phone || null,
+        notes: bill.notes || null,
         timestamp: bill.created_at,
-      },
-      device_id: bill.device_id,
-    }));
+        device_id: bill.device_id,
+      };
+    });
     
     const response = await API.bills.sync(billPayload);
     
@@ -407,11 +480,11 @@ export const syncAll = async (): Promise<{
   billsSynced: number;
   inventorySynced: number;
 }> => {
-  console.log('=== Starting full sync ===');
+  console.log('🔄 === Starting full sync to backend ===');
   
   const online = await getNetworkStatus();
   if (!online) {
-    console.log('Offline - skipping sync');
+    console.log('📴 Offline - skipping sync');
     return { 
       success: false, 
       categoriesSynced: 0, 
@@ -420,6 +493,8 @@ export const syncAll = async (): Promise<{
       inventorySynced: 0,
     };
   }
+  
+  console.log('📡 Online - syncing all local changes to backend...');
   
   const categoriesResult = await syncCategories();
   const itemsResult = await syncItems();
@@ -468,16 +543,19 @@ export const syncAll = async (): Promise<{
 export const initialSync = async (): Promise<{ success: boolean; error?: string }> => {
   try {
     console.log('=== Starting initial sync from server ===');
+    console.log(`📡 API Base URL: ${require('./api').API_BASE_URL}`);
     
     const online = await getNetworkStatus();
     if (!online) {
+      console.warn('⚠️ No internet connection detected');
       return { success: false, error: 'No internet connection' };
     }
     
+    console.log('✅ Internet connection available');
     const now = new Date().toISOString();
     
     // Download categories
-    console.log('Downloading categories...');
+    console.log('📁 Downloading categories...');
     const categories = await API.categories.getAll();
     
     for (const category of categories) {
@@ -500,32 +578,39 @@ export const initialSync = async (): Promise<{ success: boolean; error?: string 
       );
     }
     
-    console.log(`Downloaded ${categories.length} categories`);
+    console.log(`✅ Downloaded ${categories.length} categories`);
     
     // Download items
-    console.log('Downloading items...');
+    console.log('📦 Downloading items...');
     const items = await API.items.getAll();
     
+    // Save items to database (fast, synchronous)
     for (const item of items) {
       executeSql(
         `INSERT OR REPLACE INTO items 
-         (id, name, description, price, stock_quantity, sku, barcode, is_active, sort_order, 
+         (id, name, description, price, mrp_price, price_type, gst_percentage, veg_nonveg, additional_discount,
+          stock_quantity, sku, barcode, is_active, sort_order, 
           vendor_id, image_url, is_synced, server_updated_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           item.id,
           item.name,
           item.description,
           item.price,
-          item.stock_quantity,
-          item.sku,
-          item.barcode,
+          item.mrp_price || item.price,
+          item.price_type || 'exclusive',
+          item.gst_percentage || 0,
+          item.veg_nonveg || null,
+          item.additional_discount || 0,
+          item.stock_quantity || 0,
+          item.sku || null,
+          item.barcode || null,
           item.is_active ? 1 : 0,
-          item.sort_order,
-          item.vendor,
-          item.image_url,
+          item.sort_order || 0,
+          item.vendor || null,
+          item.image_url || null,
           1,
-          item.last_updated,
+          item.last_updated || item.updated_at,
           item.created_at,
           now,
         ]
@@ -543,19 +628,92 @@ export const initialSync = async (): Promise<{ success: boolean; error?: string 
       }
     }
     
-    console.log(`Downloaded ${items.length} items`);
+    console.log(`✅ Downloaded ${items.length} items`);
     
-    // Download inventory items
-    console.log('Downloading inventory...');
+    // Cache images in BACKGROUND (non-blocking) - don't wait for this
+    const itemsWithImages = items.filter(item => item.image_url);
+    if (itemsWithImages.length > 0) {
+      console.log(`🖼️ Caching ${itemsWithImages.length} images in background...`);
+      // Fire and forget - cache images after sync completes
+      import('../utils/imageCache').then(({ cacheItemImage }) => {
+        itemsWithImages.forEach(item => {
+          cacheItemImage(item.id, item.image_url).catch(err => 
+            console.warn(`Background image cache failed for ${item.id}`)
+          );
+        });
+      });
+    }
+    
+    // Download inventory items (optional - may not exist for all vendors)
+    console.log('📦 Downloading inventory...');
     try {
       const inventoryItems = await API.inventory.getAll();
-      
       await bulkUpsertInventoryItems(inventoryItems);
-      
-      console.log(`Downloaded ${inventoryItems.length} inventory items`);
+      console.log(`✅ Downloaded ${inventoryItems.length} inventory items`);
     } catch (error) {
-      console.warn('Failed to download inventory (may not be available):', error);
-      // Continue even if inventory download fails
+      console.log('ℹ️ No inventory data (optional feature)');
+    }
+    
+    // Download recent bills history (limited for faster login)
+    console.log('📄 Downloading recent bills...');
+    try {
+      const billsResponse = await API.bills.download({ limit: 100 });
+      
+      for (const bill of billsResponse.bills) {
+        // Check if bill already exists
+        const existing = executeSql(
+          'SELECT id FROM bills WHERE invoice_number = ?',
+          [bill.invoice_number]
+        );
+        
+        if (existing.length === 0) {
+          // Insert bill
+          executeSql(
+            `INSERT INTO bills (
+              id, invoice_number, bill_number, billing_mode, restaurant_name, address, gstin, fssai_license, bill_date,
+              customer_name, customer_phone, items, subtotal, discount_amount, discount_percentage,
+              cgst_amount, sgst_amount, igst_amount, total_tax, total_amount,
+              payment_mode, payment_reference, amount_paid, change_amount, notes,
+              device_id, vendor_id, is_synced, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              bill.id,
+              bill.invoice_number,
+              bill.bill_number || bill.invoice_number,
+              bill.billing_mode || 'gst',
+              bill.restaurant_name || '',
+              bill.address || '',
+              bill.gstin || null,
+              bill.fssai_license || null,
+              bill.bill_date || bill.timestamp.split('T')[0],
+              bill.customer_name || null,
+              bill.customer_phone || null,
+              JSON.stringify(bill.items),
+              bill.subtotal,
+              bill.discount_amount || 0,
+              bill.discount_percentage || 0,
+              bill.cgst || 0,
+              bill.sgst || 0,
+              bill.igst || 0,
+              bill.total_tax || 0,
+              bill.total,
+              bill.payment_mode || 'cash',
+              bill.payment_reference || null,
+              bill.amount_paid || bill.total,
+              bill.change_amount || 0,
+              bill.device_id || null,
+              bill.vendor_id || null,
+              1, // Already synced from server
+              bill.timestamp,
+              now,
+            ]
+          );
+        }
+      }
+      
+      console.log(`✅ Downloaded ${billsResponse.bills.length} recent bills`);
+    } catch (error) {
+      console.log('ℹ️ No bills history yet');
     }
     
     // Save initial sync to history

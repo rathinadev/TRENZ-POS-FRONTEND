@@ -2,6 +2,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getDatabase } from '../database/schema';
 import API from './api';
+import type { VendorProfile } from '../types/api.types';
+import { cacheVendorLogo } from '../utils/imageCache';
 
 const AUTH_TOKEN_KEY = '@auth_token';
 const USER_DATA_KEY = '@user_data';
@@ -12,6 +14,12 @@ export interface AuthData {
   username: string;
   vendor_id?: string;
   business_name?: string;
+  gst_no?: string;
+  fssai_license?: string;
+  logo_url?: string;
+  footer_note?: string;
+  address?: string;
+  phone?: string;
 }
 
 // ==================== TOKEN MANAGEMENT ====================
@@ -52,19 +60,27 @@ export const saveUserData = async (userData: AuthData): Promise<void> => {
     const db = getDatabase();
     const now = new Date().toISOString();
     
-    db.execute(
-      'DELETE FROM auth'
-    );
+    db.execute('DELETE FROM auth');
     
+    // SQLite stores NULL for undefined/null values
     db.execute(
-      `INSERT INTO auth (token, user_id, username, vendor_id, business_name, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO auth (
+        token, user_id, username, vendor_id, business_name, 
+        gst_no, fssai_license, logo_url, footer_note, address, phone,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         userData.token,
         userData.user_id,
         userData.username,
         userData.vendor_id || null,
         userData.business_name || null,
+        userData.gst_no || null,
+        userData.fssai_license || null,
+        userData.logo_url || null,
+        userData.footer_note || null,
+        userData.address || null,
+        userData.phone || null,
         now,
         now,
       ]
@@ -92,8 +108,155 @@ export const removeUserData = async (): Promise<void> => {
     // Remove from database
     const db = getDatabase();
     db.execute('DELETE FROM auth');
+    db.execute('DELETE FROM vendor_profile');
   } catch (error) {
     console.error('Failed to remove user data:', error);
+  }
+};
+
+// ==================== VENDOR PROFILE ====================
+
+export const saveVendorProfile = async (vendor: VendorProfile): Promise<void> => {
+  try {
+    const db = getDatabase();
+    const now = new Date().toISOString();
+    
+    // Check if profile exists
+    const existing = db.execute(
+      'SELECT id FROM vendor_profile WHERE vendor_id = ?',
+      [vendor.id]
+    );
+    
+    let logoLocalPath: string | null = null;
+    
+    // Cache logo if URL exists
+    if (vendor.logo_url) {
+      try {
+        logoLocalPath = await cacheVendorLogo(vendor.id, vendor.logo_url);
+      } catch (error) {
+        console.warn('Failed to cache vendor logo:', error);
+      }
+    }
+    
+    if (existing.rows?._array?.length > 0) {
+      // Update existing profile
+      db.execute(
+        `UPDATE vendor_profile SET
+          username = ?, email = ?, business_name = ?, address = ?, phone = ?,
+          gst_no = ?, fssai_license = ?, logo_url = ?, logo_local_path = ?,
+          footer_note = ?, is_approved = ?, updated_at = ?
+        WHERE vendor_id = ?`,
+        [
+          vendor.username || null,
+          vendor.email || null,
+          vendor.business_name,
+          vendor.address,
+          vendor.phone,
+          vendor.gst_no,
+          vendor.fssai_license || null,
+          vendor.logo_url || null,
+          logoLocalPath,
+          vendor.footer_note || null,
+          vendor.is_approved ? 1 : 0,
+          now,
+          vendor.id,
+        ]
+      );
+    } else {
+      // Insert new profile
+      db.execute(
+        `INSERT INTO vendor_profile (
+          vendor_id, username, email, business_name, address, phone,
+          gst_no, fssai_license, logo_url, logo_local_path, footer_note,
+          is_approved, is_synced, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          vendor.id,
+          vendor.username || null,
+          vendor.email || null,
+          vendor.business_name,
+          vendor.address,
+          vendor.phone,
+          vendor.gst_no,
+          vendor.fssai_license || null,
+          vendor.logo_url || null,
+          logoLocalPath,
+          vendor.footer_note || null,
+          vendor.is_approved ? 1 : 0,
+          1, // is_synced
+          now,
+          now,
+        ]
+      );
+    }
+    
+    console.log('Vendor profile saved successfully');
+  } catch (error) {
+    console.error('Failed to save vendor profile:', error);
+    throw error;
+  }
+};
+
+export const getVendorProfile = async (): Promise<VendorProfile | null> => {
+  try {
+    const db = getDatabase();
+    const result = db.execute(
+      'SELECT * FROM vendor_profile ORDER BY updated_at DESC LIMIT 1'
+    );
+    
+    const rows = result.rows?._array || [];
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.vendor_id,
+      username: row.username,
+      email: row.email,
+      business_name: row.business_name,
+      address: row.address,
+      phone: row.phone,
+      gst_no: row.gst_no,
+      fssai_license: row.fssai_license,
+      logo_url: row.logo_url,
+      footer_note: row.footer_note,
+      is_approved: row.is_approved === 1,
+    };
+  } catch (error) {
+    console.error('Failed to get vendor profile:', error);
+    return null;
+  }
+};
+
+export const updateVendorProfile = async (
+  data: Partial<VendorProfile> | FormData
+): Promise<VendorProfile> => {
+  try {
+    const response = await API.auth.updateProfile(data);
+    
+    // Save updated profile locally
+    if (response.vendor) {
+      await saveVendorProfile(response.vendor);
+    }
+    
+    // Update auth data if needed
+    const userData = await getUserData();
+    if (userData && response.vendor) {
+      await saveUserData({
+        ...userData,
+        business_name: response.vendor.business_name || undefined,
+        gst_no: response.vendor.gst_no || undefined,
+        fssai_license: response.vendor.fssai_license || undefined,
+        logo_url: response.vendor.logo_url || undefined,
+        footer_note: response.vendor.footer_note || undefined,
+        address: response.vendor.address || undefined,
+        phone: response.vendor.phone || undefined,
+      });
+    }
+    
+    return response.vendor;
+  } catch (error) {
+    console.error('Failed to update vendor profile:', error);
+    throw error;
   }
 };
 
@@ -106,17 +269,29 @@ export const login = async (
   try {
     const response = await API.auth.login(username, password);
     
-    // API now returns vendor object with id, business_name, gst_no
+    // API now returns vendor object with full details
+    // FIX: Using '|| undefined' instead of '|| null' to satisfy TS strict checks for optional fields
     const authData: AuthData = {
       token: response.token,
       user_id: response.user_id.toString(),
       username: response.username,
-      vendor_id: response.vendor?.id || null,
-      business_name: response.vendor?.business_name || null,
+      vendor_id: response.vendor?.id || undefined,
+      business_name: response.vendor?.business_name || undefined,
+      gst_no: response.vendor?.gst_no || undefined,
+      fssai_license: response.vendor?.fssai_license || undefined,
+      logo_url: response.vendor?.logo_url || undefined,
+      footer_note: response.vendor?.footer_note || undefined,
+      address: response.vendor?.address || undefined,
+      phone: response.vendor?.phone || undefined,
     };
     
     await saveAuthToken(response.token);
     await saveUserData(authData);
+    
+    // Save vendor profile if available
+    if (response.vendor) {
+      await saveVendorProfile(response.vendor);
+    }
     
     return { success: true, data: authData };
   } catch (error: any) {
@@ -164,13 +339,14 @@ export const logout = async (): Promise<void> => {
 
 export const register = async (data: {
   username: string;
-  email: string;
+  email?: string; // Optional field
   password: string;
   password_confirm: string;
   business_name: string;
   phone: string;
   address: string;
-  gst_no: string; // REQUIRED - needed for password reset
+  gst_no?: string; // Optional field
+  fssai_license?: string;
 }): Promise<{ success: boolean; error?: string; message?: string }> => {
   try {
     const response = await API.auth.register(data);
@@ -319,4 +495,7 @@ export default {
   saveUserData,
   getUserData,
   removeUserData,
+  saveVendorProfile,
+  getVendorProfile,
+  updateVendorProfile,
 };

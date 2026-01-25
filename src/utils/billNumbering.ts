@@ -1,5 +1,7 @@
 // src/utils/billNumbering.ts
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getDatabase } from '../database/schema';
+import type { BillingMode } from '../types/business.types';
 
 interface BillNumberingSettings {
   prefix: string;
@@ -9,8 +11,58 @@ interface BillNumberingSettings {
 }
 
 /**
+ * Generate invoice number based on billing mode
+ * Format: GST-2024-0001 or NGST-2024-0001
+ */
+export const generateInvoiceNumber = async (
+  billingMode: BillingMode
+): Promise<string> => {
+  try {
+    const db = getDatabase();
+    const year = new Date().getFullYear();
+    const prefix = billingMode === 'gst' ? 'GST' : 'NGST';
+    
+    // Get or create sequence for this billing mode and year
+    const existing = db.execute(
+      'SELECT sequence FROM invoice_sequences WHERE billing_mode = ? AND year = ?',
+      [billingMode, year]
+    );
+    
+    let sequence: number;
+    const now = new Date().toISOString();
+    
+    if (existing.rows?._array?.length > 0) {
+      // Increment existing sequence
+      sequence = existing.rows._array[0].sequence + 1;
+      db.execute(
+        'UPDATE invoice_sequences SET sequence = ?, updated_at = ? WHERE billing_mode = ? AND year = ?',
+        [sequence, now, billingMode, year]
+      );
+    } else {
+      // Create new sequence
+      sequence = 1;
+      db.execute(
+        `INSERT INTO invoice_sequences (billing_mode, year, sequence, prefix, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [billingMode, year, sequence, prefix, now, now]
+      );
+    }
+    
+    // Format: GST-2024-0001 or NGST-2024-0001
+    return `${prefix}-${year}-${sequence.toString().padStart(4, '0')}`;
+  } catch (error) {
+    console.error('Failed to generate invoice number:', error);
+    // Fallback
+    const year = new Date().getFullYear();
+    const prefix = billingMode === 'gst' ? 'GST' : 'NGST';
+    return `${prefix}-${year}-${Date.now().toString().slice(-4)}`;
+  }
+};
+
+/**
  * Get the next bill number based on current settings
  * Automatically increments the counter
+ * This is for backward compatibility - bill_number is separate from invoice_number
  */
 export const getNextBillNumber = async (): Promise<string> => {
   try {
@@ -23,7 +75,7 @@ export const getNextBillNumber = async (): Promise<string> => {
     } else {
       // Default settings if none exist
       settings = {
-        prefix: 'INV-',
+        prefix: 'BILL-',
         startingNumber: '1001',
         includeDate: true,
         currentNumber: 1001,
@@ -48,7 +100,7 @@ export const getNextBillNumber = async (): Promise<string> => {
   } catch (error) {
     console.error('Failed to get next bill number:', error);
     // Return fallback bill number
-    return `INV-${Date.now()}`;
+    return `BILL-${Date.now()}`;
   }
 };
 
@@ -65,7 +117,7 @@ export const previewBillNumber = async (): Promise<string> => {
       settings = JSON.parse(settingsJson);
     } else {
       settings = {
-        prefix: 'INV-',
+        prefix: 'BILL-',
         startingNumber: '1001',
         includeDate: true,
         currentNumber: 1001,
@@ -81,7 +133,7 @@ export const previewBillNumber = async (): Promise<string> => {
     );
   } catch (error) {
     console.error('Failed to preview bill number:', error);
-    return 'INV-1001';
+    return 'BILL-1001';
   }
 };
 
@@ -137,7 +189,7 @@ export const getBillNumberingSettings = async (): Promise<BillNumberingSettings>
     
     // Return defaults
     return {
-      prefix: 'INV-',
+      prefix: 'BILL-',
       startingNumber: '1001',
       includeDate: true,
       currentNumber: 1001,
@@ -145,10 +197,45 @@ export const getBillNumberingSettings = async (): Promise<BillNumberingSettings>
   } catch (error) {
     console.error('Failed to get bill numbering settings:', error);
     return {
-      prefix: 'INV-',
+      prefix: 'BILL-',
       startingNumber: '1001',
       includeDate: true,
       currentNumber: 1001,
     };
   }
+};
+
+/**
+ * Get current invoice sequence for a billing mode
+ */
+export const getInvoiceSequence = async (
+  billingMode: BillingMode
+): Promise<number> => {
+  try {
+    const db = getDatabase();
+    const year = new Date().getFullYear();
+    
+    const result = db.execute(
+      'SELECT sequence FROM invoice_sequences WHERE billing_mode = ? AND year = ?',
+      [billingMode, year]
+    );
+    
+    if (result.rows?._array?.length > 0) {
+      return result.rows._array[0].sequence;
+    }
+    
+    return 0;
+  } catch (error) {
+    console.error('Failed to get invoice sequence:', error);
+    return 0;
+  }
+};
+
+export default {
+  generateInvoiceNumber,
+  getNextBillNumber,
+  previewBillNumber,
+  resetBillNumbering,
+  getBillNumberingSettings,
+  getInvoiceSequence,
 };

@@ -16,6 +16,8 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
 
   const iconScale = useRef(new Animated.Value(0)).current;
   const iconOpacity = useRef(new Animated.Value(0)).current;
+  const companyNameTranslateY = useRef(new Animated.Value(20)).current;
+  const companyNameOpacity = useRef(new Animated.Value(0)).current;
   const titleTranslateY = useRef(new Animated.Value(20)).current;
   const titleOpacity = useRef(new Animated.Value(0)).current;
   const subtitleTranslateY = useRef(new Animated.Value(20)).current;
@@ -89,7 +91,24 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
     ]).start();
 
     Animated.sequence([
-      Animated.delay(300),
+      Animated.delay(250),
+      Animated.parallel([
+        Animated.spring(companyNameTranslateY, {
+          toValue: 0,
+          friction: 7,
+          tension: 40,
+          useNativeDriver: true,
+        }),
+        Animated.timing(companyNameOpacity, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+      ]),
+    ]).start();
+
+    Animated.sequence([
+      Animated.delay(400),
       Animated.parallel([
         Animated.spring(titleTranslateY, {
           toValue: 0,
@@ -106,7 +125,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
     ]).start();
 
     Animated.sequence([
-      Animated.delay(450),
+      Animated.delay(550),
       Animated.parallel([
         Animated.spring(subtitleTranslateY, {
           toValue: 0,
@@ -123,7 +142,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
     ]).start();
 
     Animated.sequence([
-      Animated.delay(600),
+      Animated.delay(700),
       Animated.parallel([
         Animated.spring(buttonsTranslateY, {
           toValue: 0,
@@ -175,6 +194,17 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
 
         <Animated.View
           style={[
+            styles.companyNameContainer,
+            {
+              opacity: companyNameOpacity,
+              transform: [{translateY: companyNameTranslateY}],
+            },
+          ]}>
+          <Text style={styles.companyName}>Trenz POS</Text>
+        </Animated.View>
+
+        <Animated.View
+          style={[
             styles.titleContainer,
             {
               opacity: titleOpacity,
@@ -197,7 +227,7 @@ const WelcomeScreen: React.FC<WelcomeScreenProps> = ({navigation}) => {
           <Text style={styles.subtitle}>
             {isReturningUser 
               ? 'Sign in or create an account' 
-              : 'Sign up to get started with your POS'}
+              : 'Sign up to get started with your Trenz POS Application'}
           </Text>
         </Animated.View>
       </View>
@@ -246,7 +276,6 @@ const styles = StyleSheet.create({
   },
   contentContainer: {
     width: '100%',
-    height: 162,
     marginBottom: 32,
   },
   iconContainer: {
@@ -263,6 +292,27 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 8,
   },
+  companyNameContainer: {
+    width: '100%',
+    marginBottom: 8,
+  },
+  companyName: {
+    fontWeight: '800',
+    fontSize: 32,
+    lineHeight: 40,
+    textAlign: 'center',
+    letterSpacing: 1.2,
+    color: '#C62828',
+    textTransform: 'uppercase',
+    shadowColor: '#C62828',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 3,
+  },
   titleContainer: {
     width: '100%',
     height: 42,
@@ -274,7 +324,7 @@ const styles = StyleSheet.create({
     lineHeight: 42,
     textAlign: 'center',
     letterSpacing: 0.38,
-    color: '#333333',
+    color: '#C62828',
   },
   subtitleContainer: {
     width: '100%',

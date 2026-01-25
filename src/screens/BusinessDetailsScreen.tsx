@@ -17,7 +17,7 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/business.types';
 import { getBusinessSettings, saveBusinessSettings } from '../services/storage';
-import { getUserData } from '../services/auth';
+import { getUserData, getVendorProfile, updateVendorProfile } from '../services/auth';
 
 type BusinessDetailsScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'BusinessDetails'>;
@@ -26,6 +26,8 @@ type BusinessDetailsScreenProps = {
 interface BusinessData {
   shopName: string;
   address: string;
+  gstin: string;
+  fssaiNo: string;
   phoneNumber: string;
   emailId: string;
 }
@@ -34,6 +36,8 @@ const BusinessDetailsScreen: React.FC<BusinessDetailsScreenProps> = ({ navigatio
   const [businessData, setBusinessData] = useState<BusinessData>({
     shopName: '',
     address: '',
+    gstin: '',
+    fssaiNo: '',
     phoneNumber: '',
     emailId: '',
   });
@@ -68,18 +72,32 @@ const BusinessDetailsScreen: React.FC<BusinessDetailsScreenProps> = ({ navigatio
 
   const loadBusinessData = async () => {
     try {
-      // First try to get from local business settings
-      const settings = await getBusinessSettings();
+      // Try to get vendor profile first (most up-to-date)
+      const vendorProfile = await getVendorProfile();
       
-      // Then get vendor data from auth (login response)
-      const userData = await getUserData();
-      
-      setBusinessData({
-        shopName: settings?.business_name || userData?.business_name || '',
-        address: settings?.business_address || '',
-        phoneNumber: settings?.business_phone || '',
-        emailId: settings?.business_email || '',
-      });
+      if (vendorProfile) {
+        setBusinessData({
+          shopName: vendorProfile.business_name || '',
+          address: vendorProfile.address || '',
+          gstin: vendorProfile.gst_no || '',
+          fssaiNo: vendorProfile.fssai_license || '',
+          phoneNumber: vendorProfile.phone || '',
+          emailId: vendorProfile.email || '',
+        });
+      } else {
+        // Fallback to business settings or user data
+        const settings = await getBusinessSettings();
+        const userData = await getUserData();
+        
+        setBusinessData({
+          shopName: settings?.business_name || userData?.business_name || '',
+          address: settings?.business_address || '',
+          gstin: settings?.business_gst || userData?.gst_no || '',
+          fssaiNo: settings?.business_fssai || userData?.fssai_license || '',
+          phoneNumber: settings?.business_phone || '',
+          emailId: settings?.business_email || '',
+        });
+      }
     } catch (error) {
       console.error('Failed to load business data:', error);
       Alert.alert('Error', 'Failed to load business details. Please try again.');
@@ -91,13 +109,31 @@ const BusinessDetailsScreen: React.FC<BusinessDetailsScreenProps> = ({ navigatio
   const handleApplyChanges = () => {
     // Validate required fields
     if (!businessData.shopName.trim()) {
-      Alert.alert('Missing Information', 'Please enter your shop name.');
+      Alert.alert('Missing Information', 'Please enter your hotel/business name.');
       return;
     }
 
     if (!businessData.address.trim()) {
       Alert.alert('Missing Information', 'Please enter your business address.');
       return;
+    }
+
+    // GSTIN is now optional, but validate format IF entered
+    if (businessData.gstin.trim()) {
+      // Validate GSTIN format (15 characters, alphanumeric)
+      if (businessData.gstin.trim().length !== 15) {
+        Alert.alert('Invalid GSTIN', 'GSTIN must be 15 characters long (e.g., 29ABCDE1234F1Z5).');
+        return;
+      }
+    }
+
+    // FSSAI is now optional, but validate format IF entered
+    if (businessData.fssaiNo.trim()) {
+      // Validate FSSAI format (14 digits)
+      if (businessData.fssaiNo.trim().length !== 14 || !/^\d+$/.test(businessData.fssaiNo.trim())) {
+        Alert.alert('Invalid FSSAI Number', 'FSSAI license number must be 14 digits.');
+        return;
+      }
     }
 
     if (!businessData.phoneNumber.trim()) {
@@ -128,13 +164,26 @@ const BusinessDetailsScreen: React.FC<BusinessDetailsScreenProps> = ({ navigatio
     setIsSaving(true);
 
     try {
-      // Save to database
+      // Update vendor profile via API
+      // Note: gst_no is READ-ONLY in the API documentation, so we do not send it.
+      await updateVendorProfile({
+        business_name: businessData.shopName.trim(),
+        address: businessData.address.trim(),
+        fssai_license: businessData.fssaiNo.trim(),
+        phone: businessData.phoneNumber.trim(),
+        email: businessData.emailId.trim(),
+      });
+
+      // Also save to local business settings for offline access
+      // We save GSTIN locally so it appears on printed bills even if API doesn't update it
       await saveBusinessSettings({
         business_name: businessData.shopName.trim(),
         business_address: businessData.address.trim(),
+        business_gst: businessData.gstin.trim(),
+        business_fssai: businessData.fssaiNo.trim(),
         business_phone: businessData.phoneNumber.trim(),
         business_email: businessData.emailId.trim(),
-      });
+      }as any);
 
       Alert.alert(
         'Success',
@@ -221,16 +270,16 @@ const BusinessDetailsScreen: React.FC<BusinessDetailsScreenProps> = ({ navigatio
             },
           ]}
         >
-          {/* Shop Name */}
+          {/* Hotel/Business Name */}
           <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Shop Name</Text>
+            <Text style={styles.label}>Hotel Name</Text>
             <TextInput
               style={styles.input}
               value={businessData.shopName}
               onChangeText={(text) =>
                 setBusinessData({ ...businessData, shopName: text })
               }
-              placeholder="Enter shop name"
+              placeholder="Enter hotel/business name"
               placeholderTextColor="#999999"
               editable={!isSaving}
             />
@@ -250,6 +299,46 @@ const BusinessDetailsScreen: React.FC<BusinessDetailsScreenProps> = ({ navigatio
               multiline
               numberOfLines={3}
               textAlignVertical="top"
+              editable={!isSaving}
+            />
+          </View>
+
+          {/* GSTIN */}
+          <View style={styles.fieldContainer}>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>GSTIN</Text>
+              <Text style={styles.optional}>(Optional)</Text>
+            </View>
+            <TextInput
+              style={styles.input}
+              value={businessData.gstin}
+              onChangeText={(text) =>
+                setBusinessData({ ...businessData, gstin: text.toUpperCase() })
+              }
+              placeholder="Enter GSTIN (e.g., 29ABCDE1234F1Z5)"
+              placeholderTextColor="#999999"
+              maxLength={15}
+              autoCapitalize="characters"
+              editable={!isSaving}
+            />
+          </View>
+
+          {/* FSSAI License Number */}
+          <View style={styles.fieldContainer}>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>FSSAI No</Text>
+              <Text style={styles.optional}>(Optional)</Text>
+            </View>
+            <TextInput
+              style={styles.input}
+              value={businessData.fssaiNo}
+              onChangeText={(text) =>
+                setBusinessData({ ...businessData, fssaiNo: text.replace(/[^0-9]/g, '') })
+              }
+              placeholder="Enter FSSAI license number (14 digits)"
+              placeholderTextColor="#999999"
+              keyboardType="numeric"
+              maxLength={14}
               editable={!isSaving}
             />
           </View>
@@ -334,6 +423,12 @@ const BusinessDetailsScreen: React.FC<BusinessDetailsScreenProps> = ({ navigatio
             <View style={styles.previewCard}>
               <Text style={styles.previewTitle}>{businessData.shopName}</Text>
               <Text style={styles.previewText}>{businessData.address}</Text>
+              {businessData.gstin ? (
+                <Text style={styles.previewText}>GSTIN: {businessData.gstin}</Text>
+              ) : null}
+              {businessData.fssaiNo ? (
+                <Text style={styles.previewText}>FSSAI: {businessData.fssaiNo}</Text>
+              ) : null}
               <Text style={styles.previewText}>{businessData.phoneNumber}</Text>
               {businessData.emailId ? (
                 <Text style={styles.previewText}>{businessData.emailId}</Text>

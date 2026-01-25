@@ -33,7 +33,8 @@ interface BillNumberingSettings {
 const BillNumberingScreen: React.FC<BillNumberingScreenProps> = ({ navigation }) => {
   const [prefix, setPrefix] = useState('INV-');
   const [startingNumber, setStartingNumber] = useState('1001');
-  const [includeDate, setIncludeDate] = useState(true);
+  // Date is now MANDATORY as per requirements
+  const includeDate = true;
   const [confirmModalVisible, setConfirmModalVisible] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -241,24 +242,12 @@ const BillNumberingScreen: React.FC<BillNumberingScreenProps> = ({ navigation })
             </Text>
           </View>
 
-          {/* Include Date Toggle */}
-          <View style={styles.toggleCard}>
-            <View style={styles.toggleContent}>
-              <View style={styles.toggleInfo}>
-                <Text style={styles.toggleTitle}>Include Date</Text>
-                <Text style={styles.toggleDescription}>
-                  Add date in bill number (YYYYMMDD)
-                </Text>
-              </View>
-
-              <Switch
-                value={includeDate}
-                onValueChange={setIncludeDate}
-                trackColor={{ false: '#E0E0E0', true: '#C62828' }}
-                thumbColor="#FFFFFF"
-                ios_backgroundColor="#E0E0E0"
-              />
-            </View>
+          {/* Date Info Card (Mandatory) */}
+          <View style={styles.infoCard}>
+            <Text style={styles.infoTitle}>Date Format</Text>
+            <Text style={styles.infoDescription}>
+              Date (YYYYMMDD) is automatically included in all bill numbers as per GST compliance requirements.
+            </Text>
           </View>
         </Animated.View>
 
@@ -431,28 +420,14 @@ const styles = StyleSheet.create({
     letterSpacing: -0.31,
     lineHeight: 24,
   },
-  toggleCard: {
-    backgroundColor: '#FFFFFF',
+  infoCard: {
+    backgroundColor: '#FFF3E0',
     borderWidth: 0.6,
-    borderColor: '#E0E0E0',
+    borderColor: '#FFB74D',
     borderRadius: 16,
     padding: 17,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 2,
   },
-  toggleContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
-  },
-  toggleInfo: {
-    flex: 1,
-  },
-  toggleTitle: {
+  infoTitle: {
     fontSize: 18,
     fontWeight: '600',
     color: '#333333',
@@ -460,9 +435,9 @@ const styles = StyleSheet.create({
     letterSpacing: -0.44,
     lineHeight: 27,
   },
-  toggleDescription: {
+  infoDescription: {
     fontSize: 16,
-    color: '#999999',
+    color: '#666666',
     letterSpacing: -0.31,
     lineHeight: 24,
   },

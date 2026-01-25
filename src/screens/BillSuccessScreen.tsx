@@ -7,12 +7,17 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import {NativeStackScreenProps} from '@react-navigation/native-stack';
 import Svg, {Path} from 'react-native-svg';
 import AnimatedButton from '../components/AnimatedButton';
 import type {RootStackParamList} from '../types/business.types';
 import { getBusinessSettings } from '../services/storage';
+import { getVendorProfile } from '../services/auth';
+import { GSTBillTemplate, NonGSTBillTemplate } from '../components/templates';
+import type { GSTBillData, NonGSTBillData } from '../components/templates';
+import { formatBill } from '../utils/billFormatter';
 
 type BillSuccessScreenProps = NativeStackScreenProps<RootStackParamList, 'BillSuccess'>;
 
@@ -29,10 +34,11 @@ const CheckIcon = () => (
 );
 
 const BillSuccessScreen: React.FC<BillSuccessScreenProps> = ({navigation, route}) => {
-  const {cart, subtotal, discount, gst, total, paymentMethod, billNumber, timestamp} = route.params;
+  const billData = route.params;
 
-  const [businessName, setBusinessName] = useState('');
+  const [formattedBill, setFormattedBill] = useState<GSTBillData | NonGSTBillData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [paperWidth] = useState<58 | 80>(58); // Can be made configurable
 
   const checkOpacity = useRef(new Animated.Value(0)).current;
   const checkScale = useRef(new Animated.Value(0)).current;
@@ -55,11 +61,29 @@ const BillSuccessScreen: React.FC<BillSuccessScreenProps> = ({navigation, route}
 
   const loadBusinessInfo = async () => {
     try {
-      const settings = await getBusinessSettings();
-      setBusinessName(settings.business_name || 'Business Name');
+      // Try to get vendor profile first
+      let vendorProfile = await getVendorProfile();
+      
+      // Fallback to business settings if no vendor profile
+      if (!vendorProfile) {
+        const settings = await getBusinessSettings();
+        vendorProfile = {
+          business_name: settings?.business_name || 'Business Name',
+          address: settings?.business_address || 'Address not set',
+          gst_no: settings?.business_gst || '',
+          fssai_license: settings?.business_fssai || '',
+          phone: settings?.business_phone || '',
+          footer_note: settings?.bill_footer_note || 'Thank You! Visit Again',
+          logo_url: settings?.business_logo_path || settings?.logo_path,
+        };
+      }
+
+      // Format the bill data
+      const formatted = formatBill(billData, vendorProfile);
+      setFormattedBill(formatted);
     } catch (error) {
       console.error('Failed to load business info:', error);
-      setBusinessName('Business Name');
+      Alert.alert('Error', 'Failed to load bill details. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -140,9 +164,11 @@ const BillSuccessScreen: React.FC<BillSuccessScreenProps> = ({navigation, route}
   };
 
   const handlePrintBill = () => {
-    console.log('Print bill:', billNumber);
+    console.log('Print bill:', billData.billNumber);
     // TODO: Integrate with Bluetooth printer
-    // Example: await printBill({ billNumber, cart, total, businessName });
+    // The formattedBill data is ready to be sent to thermal printer
+    // Example: await printBill(formattedBill);
+    Alert.alert('Print', 'Printing functionality will be available soon.');
   };
 
   const handleNewBill = () => {
@@ -150,23 +176,11 @@ const BillSuccessScreen: React.FC<BillSuccessScreenProps> = ({navigation, route}
     navigation.navigate('Billing');
   };
 
-  const formatDate = (isoString: string) => {
-    const date = new Date(isoString);
-    return date.toLocaleDateString('en-IN', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-    }) + ', ' + date.toLocaleTimeString('en-IN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-  };
-
-  if (isLoading) {
+  if (isLoading || !formattedBill) {
     return (
       <View style={[styles.container, styles.loadingContainer]}>
         <ActivityIndicator size="large" color="#10B981" />
+        <Text style={styles.loadingText}>Loading bill...</Text>
       </View>
     );
   }
@@ -196,73 +210,31 @@ const BillSuccessScreen: React.FC<BillSuccessScreenProps> = ({navigation, route}
             },
           ]}>
           <Text style={styles.title}>Bill Generated Successfully</Text>
-          <Text style={styles.billNumber}>{billNumber}</Text>
+          <Text style={styles.billNumber}>
+            {billData.billing_mode === 'gst' ? 'GST Bill' : 'Non-GST Bill'} • {billData.billNumber}
+          </Text>
         </Animated.View>
 
-        {/* Bill Card */}
+        {/* Bill Template */}
         <Animated.View
           style={[
-            styles.billCard,
+            styles.billTemplateContainer,
             {
               opacity: billOpacity,
               transform: [{scale: billScale}],
             },
           ]}>
-          {/* Business Name - Now from database */}
-          <Text style={styles.businessName}>{businessName}</Text>
-          <Text style={styles.timestamp}>{formatDate(timestamp)}</Text>
-          <Text style={styles.billId}>{billNumber}</Text>
-
-          {/* Divider */}
-          <View style={styles.divider} />
-
-          {/* Items */}
-          {cart.map((item, index) => (
-            <View key={index} style={styles.itemRow}>
-              <View style={styles.itemLeft}>
-                <Text style={styles.itemName}>{item.name}</Text>
-                <Text style={styles.itemQty}>₹{item.price} × {item.quantity}</Text>
-              </View>
-              <Text style={styles.itemTotal}>₹{(item.price * item.quantity).toFixed(2)}</Text>
-            </View>
-          ))}
-
-          {/* Divider */}
-          <View style={styles.divider} />
-
-          {/* Totals */}
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>Subtotal</Text>
-            <Text style={styles.totalValue}>₹{subtotal.toFixed(2)}</Text>
-          </View>
-          {discount > 0 && (
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Discount</Text>
-              <Text style={styles.totalValue}>-₹{discount.toFixed(2)}</Text>
-            </View>
+          {billData.billing_mode === 'gst' ? (
+            <GSTBillTemplate 
+              data={formattedBill as GSTBillData} 
+              paperWidth={paperWidth}
+            />
+          ) : (
+            <NonGSTBillTemplate 
+              data={formattedBill as NonGSTBillData} 
+              paperWidth={paperWidth}
+            />
           )}
-          <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>GST (18%)</Text>
-            <Text style={styles.totalValue}>₹{gst.toFixed(2)}</Text>
-          </View>
-
-          {/* Divider */}
-          <View style={styles.divider} />
-
-          {/* Final Total */}
-          <View style={styles.finalTotalRow}>
-            <Text style={styles.finalTotalLabel}>Total Amount</Text>
-            <Text style={styles.finalTotalValue}>₹{total.toFixed(2)}</Text>
-          </View>
-
-          {/* Divider */}
-          <View style={styles.divider} />
-
-          {/* Payment Method */}
-          <View style={styles.paymentRow}>
-            <Text style={styles.paymentLabel}>Payment Method</Text>
-            <Text style={styles.paymentValue}>{paymentMethod}</Text>
-          </View>
         </Animated.View>
       </ScrollView>
 
@@ -305,6 +277,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: '#666666',
+  },
   content: {
     flex: 1,
     paddingTop: 60,
@@ -343,12 +320,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666666',
   },
-  billCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 24,
+  billTemplateContainer: {
     marginHorizontal: 16,
     marginBottom: 24,
+    borderRadius: 16,
+    overflow: 'hidden',
     borderWidth: 1,
     borderColor: '#E0E0E0',
     shadowColor: '#000',
@@ -359,92 +335,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
-  },
-  businessName: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#333333',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  timestamp: {
-    fontSize: 14,
-    color: '#666666',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  billId: {
-    fontSize: 12,
-    color: '#999999',
-    textAlign: 'center',
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#E0E0E0',
-    marginVertical: 16,
-  },
-  itemRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  itemLeft: {
-    flex: 1,
-  },
-  itemName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333333',
-    marginBottom: 4,
-  },
-  itemQty: {
-    fontSize: 14,
-    color: '#666666',
-  },
-  itemTotal: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333333',
-  },
-  totalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  totalLabel: {
-    fontSize: 16,
-    color: '#666666',
-  },
-  totalValue: {
-    fontSize: 16,
-    color: '#333333',
-  },
-  finalTotalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  finalTotalLabel: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#333333',
-  },
-  finalTotalValue: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#333333',
-  },
-  paymentRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  paymentLabel: {
-    fontSize: 16,
-    color: '#666666',
-  },
-  paymentValue: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333333',
   },
   buttonsContainer: {
     paddingHorizontal: 24,

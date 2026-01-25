@@ -1,10 +1,31 @@
 // src/services/api.ts
-import axios, { AxiosInstance, AxiosResponse } from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import { getAuthToken } from './auth';
+import type {
+  VendorProfile,
+  LoginResponse,
+  RegisterRequest,
+  Category,
+  Item,
+  CreateItemRequest,
+  UpdateItemRequest,
+  Bill,
+  BillSyncRequest,
+  BillDownloadParams,
+  BillDownloadResponse,
+  SyncOperation,
+  DashboardStatsResponse,
+  DashboardSalesResponse,
+  DashboardItemsResponse,
+  DashboardPaymentsResponse,
+  DashboardTaxResponse,
+  DashboardProfitResponse,
+  HealthResponse,
+  BillingMode,
+} from '../types/api.types';
 
 // API Configuration
-const API_BASE_URL = 'http://13.201.93.108:8000';
-
+const API_BASE_URL = 'http://13.233.163.98:8000';
 const API_TIMEOUT = 30000; // 30 seconds
 
 // Create axios instance
@@ -22,21 +43,41 @@ apiClient.interceptors.request.use(
     const token = await getAuthToken();
     if (token && config.headers) {
       config.headers.Authorization = `Token ${token}`;
+      console.log(`🔐 API Request: ${config.method?.toUpperCase()} ${config.url}`, {
+        params: config.params,
+        hasToken: !!token,
+        tokenPrefix: token ? token.substring(0, 10) + '...' : 'none',
+      });
+    } else {
+      console.warn(`⚠️ API Request WITHOUT TOKEN: ${config.method?.toUpperCase()} ${config.url}`);
     }
     return config;
   },
   (error) => {
+    console.error('❌ Request interceptor error:', error);
     return Promise.reject(error);
   }
 );
 
 // Response interceptor - Handle errors
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    console.log(`✅ API Response: ${response.config.method?.toUpperCase()} ${response.config.url}`, {
+      status: response.status,
+      dataKeys: response.data ? Object.keys(response.data) : [],
+    });
+    return response;
+  },
   async (error) => {
+    console.error(`❌ API Error: ${error.config?.method?.toUpperCase()} ${error.config?.url}`, {
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+    });
+    
     if (error.response?.status === 401) {
       // Token expired or invalid - logout user
-      console.log('Authentication failed - token invalid');
+      console.log('🔒 Authentication failed - token invalid or expired');
       // You can dispatch logout action here
     }
     return Promise.reject(error);
@@ -46,14 +87,14 @@ apiClient.interceptors.response.use(
 // API Service
 export const API = {
   // ==================== HEALTH ====================
-  health: async (): Promise<any> => {
+  health: async (): Promise<HealthResponse> => {
     const response = await apiClient.get('/health/');
     return response.data;
   },
 
   // ==================== AUTH ====================
   auth: {
-    login: async (username: string, password: string): Promise<any> => {
+    login: async (username: string, password: string): Promise<LoginResponse> => {
       const response = await apiClient.post('/auth/login', {
         username,
         password,
@@ -61,16 +102,7 @@ export const API = {
       return response.data;
     },
 
-    register: async (data: {
-      username: string;
-      email: string;
-      password: string;
-      password_confirm: string;
-      business_name: string;
-      phone: string;
-      address: string;
-      gst_no: string; // REQUIRED per API documentation
-    }): Promise<any> => {
+    register: async (data: RegisterRequest): Promise<any> => {
       const response = await apiClient.post('/auth/register', data);
       return response.data;
     },
@@ -97,26 +129,45 @@ export const API = {
       const response = await apiClient.post('/auth/reset-password', data);
       return response.data;
     },
+
+    // Get vendor profile
+    getProfile: async (): Promise<VendorProfile> => {
+      const response = await apiClient.get('/auth/profile');
+      return response.data;
+    },
+
+    // Update vendor profile (with optional logo upload)
+    updateProfile: async (data: FormData | Partial<VendorProfile>): Promise<{
+      message: string;
+      vendor: VendorProfile;
+    }> => {
+      const isFormData = data instanceof FormData;
+      // Don't set Content-Type for FormData - axios will set it with boundary automatically
+      const response = await apiClient.patch('/auth/profile', data, {
+        headers: isFormData ? {} : { 'Content-Type': 'application/json' },
+      });
+      return response.data;
+    },
   },
 
   // ==================== CATEGORIES ====================
   categories: {
-    getAll: async (): Promise<any[]> => {
+    getAll: async (): Promise<Category[]> => {
       const response = await apiClient.get('/items/categories/');
       return response.data;
     },
 
-    getById: async (id: string): Promise<any> => {
-      const response = await apiClient.get(`/items/categories/${id}`);
+    getById: async (id: string): Promise<Category> => {
+      const response = await apiClient.get(`/items/categories/${id}/`);
       return response.data;
     },
 
     create: async (data: {
-      id: string;
+      id?: string;
       name: string;
       description?: string;
       sort_order?: number;
-    }): Promise<any> => {
+    }): Promise<Category> => {
       const response = await apiClient.post('/items/categories/', data);
       return response.data;
     },
@@ -126,22 +177,17 @@ export const API = {
       description: string;
       sort_order: number;
       is_active: boolean;
-    }>): Promise<any> => {
-      const response = await apiClient.patch(`/items/categories/${id}`, data);
+    }>): Promise<Category> => {
+      const response = await apiClient.patch(`/items/categories/${id}/`, data);
       return response.data;
     },
 
     delete: async (id: string): Promise<void> => {
-      await apiClient.delete(`/items/categories/${id}`);
+      await apiClient.delete(`/items/categories/${id}/`);
     },
 
     // Batch sync
-    sync: async (operations: Array<{
-      operation: 'create' | 'update' | 'delete';
-      data?: any;
-      id?: string;
-      timestamp: string;
-    }>): Promise<any> => {
+    sync: async (operations: SyncOperation[]): Promise<any> => {
       const response = await apiClient.post('/items/categories/sync', operations);
       return response.data;
     },
@@ -152,52 +198,39 @@ export const API = {
     getAll: async (params?: {
       category?: string;
       search?: string;
-    }): Promise<any[]> => {
+      is_active?: boolean;
+    }): Promise<Item[]> => {
       const response = await apiClient.get('/items/', { params });
       return response.data;
     },
 
-    getById: async (id: string): Promise<any> => {
-      const response = await apiClient.get(`/items/${id}`);
+    getById: async (id: string): Promise<Item> => {
+      const response = await apiClient.get(`/items/${id}/`);
       return response.data;
     },
 
-    create: async (data: {
-      id: string;
-      name: string;
-      description?: string;
-      price: number;
-      stock_quantity?: number;
-      sku?: string;
-      barcode?: string;
-      category_ids?: string[];
-      sort_order?: number;
-    }): Promise<any> => {
+    create: async (data: CreateItemRequest): Promise<Item> => {
       const response = await apiClient.post('/items/', data);
       return response.data;
     },
 
-    update: async (id: string, data: Partial<{
-      name: string;
-      description: string;
-      price: number;
-      stock_quantity: number;
-      sku: string;
-      barcode: string;
-      category_ids: string[];
-      is_active: boolean;
-      sort_order: number;
-    }>): Promise<any> => {
-      const response = await apiClient.patch(`/items/${id}`, data);
+    update: async (id: string, data: UpdateItemRequest): Promise<Item> => {
+      const response = await apiClient.patch(`/items/${id}/`, data);
       return response.data;
     },
 
     delete: async (id: string): Promise<void> => {
-      await apiClient.delete(`/items/${id}`);
+      await apiClient.delete(`/items/${id}/`);
     },
 
-    // Upload image
-    uploadImage: async (id: string, imageUri: string): Promise<any> => {
+    // Update item status
+    updateStatus: async (id: string, is_active: boolean): Promise<Item> => {
+      const response = await apiClient.patch(`/items/${id}/status/`, { is_active });
+      return response.data;
+    },
+
+    // Upload image (multipart/form-data)
+    uploadImage: async (id: string, imageUri: string): Promise<Item> => {
       const formData = new FormData();
       formData.append('image', {
         uri: imageUri,
@@ -205,21 +238,43 @@ export const API = {
         name: `${id}.jpg`,
       } as any);
 
-      const response = await apiClient.patch(`/items/${id}`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
+      // Don't set Content-Type - axios will set it with boundary automatically
+      const response = await apiClient.patch(`/items/${id}/`, formData);
+      return response.data;
+    },
+
+    // Create item with image (multipart/form-data)
+    createWithImage: async (data: CreateItemRequest, imageUri?: string): Promise<Item> => {
+      if (!imageUri) {
+        return API.items.create(data);
+      }
+
+      const formData = new FormData();
+      Object.entries(data).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          if (key === 'category_ids' && Array.isArray(value)) {
+            value.forEach((id: string) => {
+              formData.append('category_ids', id);
+            });
+          } else {
+            formData.append(key, String(value));
+          }
+        }
       });
+
+      formData.append('image', {
+        uri: imageUri,
+        type: 'image/jpeg',
+        name: `${data.id || 'item'}.jpg`,
+      } as any);
+
+      // Don't set Content-Type - axios will set it with boundary automatically
+      const response = await apiClient.post('/items/', formData);
       return response.data;
     },
 
     // Batch sync
-    sync: async (operations: Array<{
-      operation: 'create' | 'update' | 'delete';
-      data?: any;
-      id?: string;
-      timestamp: string;
-    }>): Promise<any> => {
+    sync: async (operations: SyncOperation[]): Promise<any> => {
       const response = await apiClient.post('/items/sync', operations);
       return response.data;
     },
@@ -304,7 +359,26 @@ export const API = {
 
   // ==================== BILLS / SALES BACKUP ====================
   bills: {
-    sync: async (bills: Array<{
+    // Download bills from server (for new device or sync)
+    download: async (params?: BillDownloadParams): Promise<BillDownloadResponse> => {
+      const response = await apiClient.get('/backup/sync', { params });
+      return response.data;
+    },
+
+    // Upload/sync bills to server
+    sync: async (bills: BillSyncRequest | BillSyncRequest[]): Promise<{
+      synced: number;
+      created: number;
+      updated: number;
+      skipped: number;
+      message: string;
+    }> => {
+      const response = await apiClient.post('/backup/sync', bills);
+      return response.data;
+    },
+
+    // Legacy sync method (for backward compatibility)
+    syncLegacy: async (bills: Array<{
       bill_data: any;
       device_id: string;
     }> | {
@@ -312,6 +386,66 @@ export const API = {
       device_id: string;
     }): Promise<any> => {
       const response = await apiClient.post('/backup/sync', bills);
+      return response.data;
+    },
+  },
+
+  // ==================== DASHBOARD & ANALYTICS ====================
+  dashboard: {
+    // Get overall statistics
+    getStats: async (params?: {
+      start_date?: string;
+      end_date?: string;
+    }): Promise<DashboardStatsResponse> => {
+      const response = await apiClient.get('/dashboard/stats', { params });
+      return response.data;
+    },
+
+    // Get sales analytics by billing mode
+    getSales: async (params?: {
+      start_date?: string;
+      end_date?: string;
+      billing_mode?: BillingMode;
+    }): Promise<DashboardSalesResponse> => {
+      const response = await apiClient.get('/dashboard/sales', { params });
+      return response.data;
+    },
+
+    // Get item analytics (most/least sold)
+    getItems: async (params?: {
+      start_date?: string;
+      end_date?: string;
+      sort?: 'most_sold' | 'least_sold';
+      limit?: number;
+    }): Promise<DashboardItemsResponse> => {
+      const response = await apiClient.get('/dashboard/items', { params });
+      return response.data;
+    },
+
+    // Get payment mode analytics
+    getPayments: async (params?: {
+      start_date?: string;
+      end_date?: string;
+    }): Promise<DashboardPaymentsResponse> => {
+      const response = await apiClient.get('/dashboard/payments', { params });
+      return response.data;
+    },
+
+    // Get tax collection analytics
+    getTax: async (params?: {
+      start_date?: string;
+      end_date?: string;
+    }): Promise<DashboardTaxResponse> => {
+      const response = await apiClient.get('/dashboard/tax', { params });
+      return response.data;
+    },
+
+    // Get profit analytics
+    getProfit: async (params?: {
+      start_date?: string;
+      end_date?: string;
+    }): Promise<DashboardProfitResponse> => {
+      const response = await apiClient.get('/dashboard/profit', { params });
       return response.data;
     },
   },

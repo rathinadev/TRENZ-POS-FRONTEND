@@ -11,6 +11,7 @@ import {
   Image,
   Alert,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RouteProp } from '@react-navigation/native';
@@ -27,9 +28,18 @@ const EditItemScreen: React.FC<EditItemScreenProps> = ({ navigation, route }) =>
 
   const [itemName, setItemName] = useState(item.name);
   const [price, setPrice] = useState(item.price.toString());
+  const [mrpPrice, setMrpPrice] = useState((item.mrp_price || item.price).toString());
+  const [priceType, setPriceType] = useState<'exclusive' | 'inclusive'>(
+    (item.price_type as 'exclusive' | 'inclusive') || 'exclusive'
+  );
+  const [gstPercentage, setGstPercentage] = useState((item.gst_percentage || 0).toString());
+  const [vegNonVeg, setVegNonVeg] = useState<'veg' | 'nonveg' | ''>(
+    (item.veg_nonveg as 'veg' | 'nonveg') || ''
+  );
+  const [additionalDiscount, setAdditionalDiscount] = useState((item.additional_discount || 0).toString());
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>(item.category_ids || []);
   const [imageUrl, setImageUrl] = useState(item.image || '');
-  const [useGlobalGST, setUseGlobalGST] = useState(true);
+  const [useGlobalGST, setUseGlobalGST] = useState(!item.gst_percentage || item.gst_percentage === 0);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [changingImage, setChangingImage] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -65,17 +75,73 @@ const EditItemScreen: React.FC<EditItemScreenProps> = ({ navigation, route }) =>
     try {
       setIsLoading(true);
       
-      // Load categories from database
-      const categoriesData = await getCategories();
-      setCategories(categoriesData);
+      // First, load from local database (fast)
+      const localCategories = await getCategories();
+      console.log('📁 Loaded categories from local database:', localCategories.length);
+      
+      if (localCategories.length > 0) {
+        // Set categories immediately if we have them locally
+        setCategories(localCategories);
+      }
+      
+      // Then try to fetch from API to get latest (including global categories)
+      try {
+        console.log('🌐 Fetching categories from API...');
+        const API = await import('../services/api');
+        const apiCategories = await API.default.categories.getAll();
+        console.log(`📥 Received ${apiCategories.length} categories from API`);
+        
+        // Save to database
+        const { getDatabase } = await import('../database/schema');
+        const db = getDatabase();
+        const now = new Date().toISOString();
+        
+        for (const category of apiCategories) {
+          db.execute(
+            `INSERT OR REPLACE INTO categories 
+             (id, name, description, is_active, sort_order, vendor_id, is_synced, server_updated_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              category.id,
+              category.name,
+              category.description,
+              category.is_active ? 1 : 0,
+              category.sort_order,
+              category.vendor_id || null,
+              1,
+              category.updated_at,
+              category.created_at,
+              now,
+            ]
+          );
+        }
+        console.log(`✅ Synced ${apiCategories.length} categories to database`);
+        
+        // Reload from database to get the updated list
+        const updatedCategories = await getCategories();
+        setCategories(updatedCategories);
+      } catch (apiError) {
+        console.warn('Failed to fetch categories from API, using local data:', apiError);
+        
+        // If we didn't have local categories and API failed, show a more helpful message
+        if (localCategories.length === 0) {
+          console.warn('⚠️ No categories available - neither local nor from API');
+        }
+      }
 
       // Load fresh item data
       const itemData = await getItemById(item.id);
       if (itemData) {
         setItemName(itemData.name);
         setPrice(itemData.price.toString());
+        setMrpPrice((itemData.mrp_price || itemData.price).toString());
+        setPriceType((itemData.price_type as 'exclusive' | 'inclusive') || 'exclusive');
+        setGstPercentage((itemData.gst_percentage || 0).toString());
+        setVegNonVeg((itemData.veg_nonveg as 'veg' | 'nonveg') || '');
+        setAdditionalDiscount((itemData.additional_discount || 0).toString());
         setSelectedCategoryIds(itemData.category_ids || []);
         setImageUrl(itemData.image_url || itemData.image_path || '');
+        setUseGlobalGST(!itemData.gst_percentage || itemData.gst_percentage === 0);
       }
     } catch (error) {
       console.error('Failed to load data:', error);
@@ -101,6 +167,12 @@ const EditItemScreen: React.FC<EditItemScreenProps> = ({ navigation, route }) =>
       return;
     }
 
+    // Price Type is mandatory
+    if (!priceType) {
+      Alert.alert('Error', 'Please select price type (Exclusive or Inclusive)');
+      return;
+    }
+
     try {
       setIsUpdating(true);
 
@@ -108,9 +180,14 @@ const EditItemScreen: React.FC<EditItemScreenProps> = ({ navigation, route }) =>
       await updateItem(item.id, {
         name: itemName.trim(),
         price: parseFloat(price),
+        mrp_price: mrpPrice ? parseFloat(mrpPrice) : parseFloat(price),
+        price_type: priceType,
+        gst_percentage: useGlobalGST ? 0 : (parseFloat(gstPercentage) || 0),
+        veg_nonveg: vegNonVeg || undefined,
+        additional_discount: parseFloat(additionalDiscount) || 0,
         category_ids: selectedCategoryIds,
+        image_url: imageUrl || undefined,
         // Note: Image upload functionality would go here
-        // For now, we'll just update other fields
       });
 
       Alert.alert(
@@ -233,9 +310,9 @@ const EditItemScreen: React.FC<EditItemScreenProps> = ({ navigation, route }) =>
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Item Image */}
+          {/* Item Image (Optional) */}
           <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Item Image</Text>
+            <Text style={styles.label}>Item Image (Optional)</Text>
             
             {!changingImage && imageUrl ? (
               /* Show existing image with Change Image link */
@@ -309,51 +386,117 @@ const EditItemScreen: React.FC<EditItemScreenProps> = ({ navigation, route }) =>
             </View>
           </View>
 
+          {/* MRP Price */}
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>MRP Price (Optional)</Text>
+            <View style={styles.priceInputContainer}>
+              <Text style={styles.rupeeSymbol}>₹</Text>
+              <TextInput
+                style={styles.priceInput}
+                placeholder="Same as price"
+                placeholderTextColor="#999999"
+                keyboardType="numeric"
+                value={mrpPrice}
+                onChangeText={setMrpPrice}
+                editable={!isUpdating}
+              />
+            </View>
+            <Text style={styles.helperText}>Leave empty to use same as price</Text>
+          </View>
+
+          {/* Price Type (MANDATORY) */}
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>Item GST Price / MRP Price *</Text>
+            <Text style={styles.helperText}>This option is mandatory for GST calculation</Text>
+            <View style={styles.priceTypeToggle}>
+              <TouchableOpacity
+                style={[
+                  styles.priceTypeButton,
+                  priceType === 'exclusive' && styles.priceTypeButtonActive,
+                ]}
+                onPress={() => !isUpdating && setPriceType('exclusive')}
+                disabled={isUpdating}>
+                <Text
+                  style={[
+                    styles.priceTypeText,
+                    priceType === 'exclusive' && styles.priceTypeTextActive,
+                  ]}>
+                  Exclusive
+                </Text>
+                <Text style={styles.priceTypeSubtext}>GST added on top</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.priceTypeButton,
+                  priceType === 'inclusive' && styles.priceTypeButtonActive,
+                ]}
+                onPress={() => !isUpdating && setPriceType('inclusive')}
+                disabled={isUpdating}>
+                <Text
+                  style={[
+                    styles.priceTypeText,
+                    priceType === 'inclusive' && styles.priceTypeTextActive,
+                  ]}>
+                  Inclusive
+                </Text>
+                <Text style={styles.priceTypeSubtext}>GST included in price</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Veg/Non-Veg */}
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>Veg or Non-Veg (Optional)</Text>
+            <View style={styles.vegNonVegToggle}>
+              <TouchableOpacity
+                style={[
+                  styles.vegNonVegButton,
+                  vegNonVeg === 'veg' && styles.vegNonVegButtonActive,
+                ]}
+                onPress={() => !isUpdating && setVegNonVeg(vegNonVeg === 'veg' ? '' : 'veg')}
+                disabled={isUpdating}>
+                <Text
+                  style={[
+                    styles.vegNonVegText,
+                    vegNonVeg === 'veg' && styles.vegNonVegTextActive,
+                  ]}>
+                  Veg
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.vegNonVegButton,
+                  vegNonVeg === 'nonveg' && styles.vegNonVegButtonActive,
+                ]}
+                onPress={() => !isUpdating && setVegNonVeg(vegNonVeg === 'nonveg' ? '' : 'nonveg')}
+                disabled={isUpdating}>
+                <Text
+                  style={[
+                    styles.vegNonVegText,
+                    vegNonVeg === 'nonveg' && styles.vegNonVegTextActive,
+                  ]}>
+                  Non-Veg
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
           {/* Category */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Category</Text>
             <TouchableOpacity
               style={styles.dropdown}
-              onPress={() => !isUpdating && setShowCategoryDropdown(!showCategoryDropdown)}
+              onPress={() => !isUpdating && setShowCategoryDropdown(true)}
               disabled={isUpdating}
             >
               <Text style={styles.dropdownText}>{getSelectedCategoryNames()}</Text>
               <Text style={styles.dropdownArrow}>▼</Text>
             </TouchableOpacity>
-            {showCategoryDropdown && (
-              <View style={styles.dropdownMenu}>
-                {categories.length > 0 ? (
-                  categories.map((cat) => (
-                    <TouchableOpacity
-                      key={cat.id}
-                      style={styles.dropdownItem}
-                      onPress={() => toggleCategory(cat.id)}
-                    >
-                      <View style={styles.checkboxContainer}>
-                        <View style={[
-                          styles.checkbox,
-                          selectedCategoryIds.includes(cat.id) && styles.checkboxSelected
-                        ]}>
-                          {selectedCategoryIds.includes(cat.id) && (
-                            <Text style={styles.checkmark}>✓</Text>
-                          )}
-                        </View>
-                        <Text style={styles.dropdownItemText}>{cat.name}</Text>
-                      </View>
-                    </TouchableOpacity>
-                  ))
-                ) : (
-                  <View style={styles.dropdownItem}>
-                    <Text style={styles.dropdownItemText}>No categories available</Text>
-                  </View>
-                )}
-              </View>
-            )}
           </View>
 
-          {/* GST Settings */}
+          {/* GST Settings (Optional) */}
           <View style={styles.fieldContainer}>
-            <Text style={styles.label}>GST Settings</Text>
+            <Text style={styles.label}>GST Percentage (Optional)</Text>
             <View style={styles.gstContainer}>
               {/* Use Global GST */}
               <TouchableOpacity
@@ -391,6 +534,60 @@ const EditItemScreen: React.FC<EditItemScreenProps> = ({ navigation, route }) =>
                 </View>
               </TouchableOpacity>
             </View>
+
+            {/* GST Percentage Input (when not using global) */}
+            {!useGlobalGST && (
+              <View style={styles.gstPercentageContainer}>
+                <Text style={styles.gstPercentageLabel}>GST Percentage</Text>
+                <View style={styles.gstPercentageButtons}>
+                  {['0', '5', '8', '18'].map((percent) => (
+                    <TouchableOpacity
+                      key={percent}
+                      style={[
+                        styles.gstPercentageButton,
+                        gstPercentage === percent && styles.gstPercentageButtonActive,
+                      ]}
+                      onPress={() => !isUpdating && setGstPercentage(percent)}
+                      disabled={isUpdating}>
+                      <Text
+                        style={[
+                          styles.gstPercentageText,
+                          gstPercentage === percent && styles.gstPercentageTextActive,
+                        ]}>
+                        {percent}%
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <TextInput
+                  style={styles.gstPercentageInput}
+                  placeholder="Or enter custom %"
+                  placeholderTextColor="#999999"
+                  keyboardType="decimal-pad"
+                  value={gstPercentage}
+                  onChangeText={setGstPercentage}
+                  editable={!isUpdating}
+                />
+              </View>
+            )}
+          </View>
+
+          {/* Additional Discount */}
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>Additional Discount (Optional)</Text>
+            <View style={styles.priceInputContainer}>
+              <Text style={styles.rupeeSymbol}>₹</Text>
+              <TextInput
+                style={styles.priceInput}
+                placeholder="0"
+                placeholderTextColor="#999999"
+                keyboardType="numeric"
+                value={additionalDiscount}
+                onChangeText={setAdditionalDiscount}
+                editable={!isUpdating}
+              />
+            </View>
+            <Text style={styles.helperText}>Item-level discount per unit</Text>
           </View>
         </ScrollView>
       </Animated.View>
@@ -409,6 +606,64 @@ const EditItemScreen: React.FC<EditItemScreenProps> = ({ navigation, route }) =>
           )}
         </TouchableOpacity>
       </View>
+
+      {/* Category Selection Modal */}
+      <Modal
+        visible={showCategoryDropdown}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowCategoryDropdown(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowCategoryDropdown(false)}
+        >
+          <View style={styles.modalContainer}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Select Categories</Text>
+                <TouchableOpacity 
+                  onPress={() => setShowCategoryDropdown(false)}
+                  style={styles.modalCloseButton}
+                >
+                  <Text style={styles.modalCloseText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.modalScrollView}>
+                {categories.length > 0 ? (
+                  categories.map((cat) => (
+                    <TouchableOpacity
+                      key={cat.id}
+                      style={[
+                        styles.modalItem,
+                        selectedCategoryIds.includes(cat.id) && styles.modalItemSelected
+                      ]}
+                      onPress={() => toggleCategory(cat.id)}
+                    >
+                      <View style={styles.checkboxContainer}>
+                        <View style={[
+                          styles.checkbox,
+                          selectedCategoryIds.includes(cat.id) && styles.checkboxSelected
+                        ]}>
+                          {selectedCategoryIds.includes(cat.id) && (
+                            <Text style={styles.checkmark}>✓</Text>
+                          )}
+                        </View>
+                        <Text style={styles.modalItemText}>{cat.name}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))
+                ) : (
+                  <View style={styles.modalItem}>
+                    <Text style={styles.modalItemText}>No categories available</Text>
+                  </View>
+                )}
+              </ScrollView>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 };
@@ -465,17 +720,25 @@ const styles = StyleSheet.create({
   formContainer: {
     flex: 1,
     paddingTop: 24,
+    overflow: 'visible',
   },
   scrollView: {
     flex: 1,
     paddingHorizontal: 20,
+    overflow: 'visible',
   },
   scrollContent: {
     gap: 24,
     paddingBottom: 140,
+    overflow: 'visible',
   },
   fieldContainer: {
     gap: 12,
+  },
+  categoryContainer: {
+    zIndex: 9999,
+    position: 'relative',
+    overflow: 'visible',
   },
   label: {
     fontSize: 14,
@@ -647,16 +910,21 @@ const styles = StyleSheet.create({
     color: '#999999',
   },
   dropdownMenu: {
+    position: 'absolute',
+    top: 60,
+    left: 0,
+    right: 0,
+    maxHeight: 200,
     backgroundColor: '#FFFFFF',
     borderWidth: 0.6,
     borderColor: '#E0E0E0',
     borderRadius: 10,
-    marginTop: 4,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 50,
+    zIndex: 99999,
   },
   dropdownItem: {
     paddingHorizontal: 16,
@@ -774,6 +1042,171 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
     letterSpacing: -0.31,
+  },
+  helperText: {
+    fontSize: 12,
+    color: '#999999',
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  priceTypeToggle: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  priceTypeButton: {
+    flex: 1,
+    padding: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 0.6,
+    borderColor: '#E0E0E0',
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  priceTypeButtonActive: {
+    backgroundColor: '#FFF5F5',
+    borderColor: '#C62828',
+  },
+  priceTypeText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333333',
+    marginBottom: 4,
+  },
+  priceTypeTextActive: {
+    color: '#C62828',
+  },
+  priceTypeSubtext: {
+    fontSize: 12,
+    color: '#999999',
+  },
+  vegNonVegToggle: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  vegNonVegButton: {
+    flex: 1,
+    height: 48,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 0.6,
+    borderColor: '#E0E0E0',
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  vegNonVegButtonActive: {
+    backgroundColor: '#FFF5F5',
+    borderColor: '#C62828',
+  },
+  vegNonVegText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666666',
+  },
+  vegNonVegTextActive: {
+    color: '#C62828',
+  },
+  gstPercentageContainer: {
+    marginTop: 12,
+  },
+  gstPercentageLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333333',
+    marginBottom: 8,
+  },
+  gstPercentageButtons: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  gstPercentageButton: {
+    flex: 1,
+    height: 40,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  gstPercentageButtonActive: {
+    backgroundColor: '#C62828',
+    borderColor: '#C62828',
+  },
+  gstPercentageText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666666',
+  },
+  gstPercentageTextActive: {
+    color: '#FFFFFF',
+  },
+  gstPercentageInput: {
+    height: 48,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 0.6,
+    borderColor: '#E0E0E0',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    color: '#333333',
+  },
+  // Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContainer: {
+    width: '85%',
+    maxHeight: '70%',
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333333',
+  },
+  modalCloseButton: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalCloseText: {
+    fontSize: 24,
+    color: '#666666',
+  },
+  modalScrollView: {
+    maxHeight: 400,
+  },
+  modalItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 0.6,
+    borderBottomColor: '#F0F0F0',
+  },
+  modalItemSelected: {
+    backgroundColor: '#FFF5F5',
+  },
+  modalItemText: {
+    fontSize: 16,
+    color: '#333333',
   },
 });
 
