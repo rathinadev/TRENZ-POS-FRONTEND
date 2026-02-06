@@ -27,6 +27,7 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
   // --- State Management ---
   const [itemName, setItemName] = useState('');
   const [sku, setSku] = useState(''); // New SKU State
+  const [hsnCode, setHsnCode] = useState('');
 
   // Pricing State
   const [basePrice, setBasePrice] = useState('');
@@ -43,10 +44,18 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
   const [categories, setCategories] = useState<any[]>([]);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
 
+  // Modal State
+  const [showAddCategoryModal, setShowAddCategoryModal] = useState(false);
+
+  // Add Category State
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryDescription, setNewCategoryDescription] = useState('');
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
+
   // Image
   const [imagePath, setImagePath] = useState('');
 
-  // System State
+  // Loading State
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -132,6 +141,44 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
     }
   };
 
+  const handleCreateCategory = async () => {
+    if (!newCategoryName.trim()) {
+      Alert.alert('Missing Info', 'Please enter a category name.');
+      return;
+    }
+
+    try {
+      setIsCreatingCategory(true);
+      const newCategory = await API.categories.create({
+        name: newCategoryName.trim(),
+        description: newCategoryDescription.trim() || undefined,
+        sort_order: categories.length + 1,
+      });
+
+      // Add to local state
+      setCategories([...categories, newCategory]);
+
+      // Auto-select the new category
+      setCategory(newCategory.name);
+      setCategoryId(newCategory.id);
+
+      // Clear form and close modal
+      setNewCategoryName('');
+      setNewCategoryDescription('');
+      setShowAddCategoryModal(false);
+
+      Alert.alert('Success', 'Category created successfully!');
+    } catch (error: any) {
+      console.error('Failed to create category:', error);
+      const errorMessage = error.response?.data?.name?.[0] ||
+        error.response?.data?.detail ||
+        'Failed to create category. Please try again.';
+      Alert.alert('Error', errorMessage);
+    } finally {
+      setIsCreatingCategory(false);
+    }
+  };
+
   // --- Save Logic ---
   const handleSave = async () => {
     // 1. Validation
@@ -163,12 +210,13 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
       const itemData: any = {
         name: itemName.trim(),
         sku: sku.trim() || undefined,
+        hsn_code: hsnCode.trim() || undefined,
         price: parseFloat(basePrice),
         mrp_price: parseFloat(basePrice), // MRP same as base price
         price_type: 'exclusive',
         gst_percentage: gstPercentage === '' ? 0 : parseFloat(gstPercentage),
         veg_nonveg: vegNonVeg || undefined,
-        additional_discount: parseFloat(additionalDiscount) || 0,
+        discount_percentage: parseFloat(additionalDiscount) || 0,
         category_ids: [categoryId],
         stock_quantity: 0,
       };
@@ -317,7 +365,33 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
             />
           </View>
 
-          {/* 3. SKU / Item Code (Added) */}
+          {/* 3. HSN Code */}
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>HSN Code (Optional)</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="e.g. 1001"
+              placeholderTextColor="#999"
+              value={hsnCode}
+              onChangeText={setHsnCode}
+            />
+          </View>
+
+          {/* 4. Category Selection */}
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>Category *</Text>
+            <TouchableOpacity
+              style={styles.dropdown}
+              onPress={() => setShowCategoryDropdown(true)}
+            >
+              <Text style={styles.dropdownText}>
+                {category || 'Select Category'}
+              </Text>
+              <Text style={styles.dropdownArrow}>▼</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* 5. SKU / Item Code */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Item Code / SKU (Optional)</Text>
             <TextInput
@@ -329,7 +403,7 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
             />
           </View>
 
-          {/* 4. Veg / Non-Veg Icons */}
+          {/* 5. Veg / Non-Veg Icons */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Dietary Type</Text>
             <View style={styles.dietaryContainer}>
@@ -360,7 +434,7 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
             </View>
           </View>
 
-          {/* 5. GST Percentage Selection */}
+          {/* 6. GST Percentage Selection */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>GST Rate (%)</Text>
             <View style={styles.gstPercentageButtons}>
@@ -394,7 +468,7 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
             />
           </View>
 
-          {/* 6. Base Price Field */}
+          {/* 7. Base Price Field */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Base Price *</Text>
             <Text style={styles.helperText}>(Excluding GST)</Text>
@@ -411,34 +485,30 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
             </View>
           </View>
 
-          {/* 7. Discount */}
-          <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Additional Discount (Optional)</Text>
+          {/* 8. Discount */}
+          <View style={[styles.fieldContainer, { marginBottom: 20 }]}>
+            <Text style={styles.label}>Additional Discount % (Optional)</Text>
             <View style={styles.priceInputContainer}>
-              <Text style={styles.rupeeSymbol}>₹</Text>
               <TextInput
                 style={styles.priceInput}
                 placeholder="0"
                 placeholderTextColor="#999"
-                keyboardType="numeric"
+                keyboardType="decimal-pad"
                 value={additionalDiscount}
-                onChangeText={setAdditionalDiscount}
+                onChangeText={(text) => {
+                  // Allow only numbers and one decimal point
+                  const cleaned = text.replace(/[^0-9.]/g, '');
+                  // Ensure only one decimal point
+                  const parts = cleaned.split('.');
+                  if (parts.length > 2) return;
+                  // Limit to 100%
+                  const numValue = parseFloat(cleaned);
+                  if (!isNaN(numValue) && numValue > 100) return;
+                  setAdditionalDiscount(cleaned);
+                }}
               />
+              <Text style={styles.percentageSymbol}>%</Text>
             </View>
-          </View>
-
-          {/* 8. Category Selection */}
-          <View style={[styles.fieldContainer, { marginBottom: 20 }]}>
-            <Text style={styles.label}>Category *</Text>
-            <TouchableOpacity
-              style={styles.dropdown}
-              onPress={() => setShowCategoryDropdown(true)}
-            >
-              <Text style={styles.dropdownText}>
-                {category || 'Select Category'}
-              </Text>
-              <Text style={styles.dropdownArrow}>▼</Text>
-            </TouchableOpacity>
           </View>
 
         </ScrollView>
@@ -482,47 +552,151 @@ const AddItemScreen: React.FC<AddItemScreenProps> = ({ navigation }) => {
 
               <ScrollView style={styles.modalScrollView}>
                 {categories.length > 0 ? (
-                  categories.map((cat) => (
+                  <>
+                    {categories.map((cat) => (
+                      <TouchableOpacity
+                        key={cat.id}
+                        style={[
+                          styles.modalItem,
+                          category === cat.name && styles.modalItemSelected
+                        ]}
+                        onPress={() => {
+                          setCategory(cat.name);
+                          setCategoryId(cat.id);
+                          setShowCategoryDropdown(false);
+                        }}
+                      >
+                        <Text style={[
+                          styles.modalItemText,
+                          category === cat.name && styles.modalItemTextSelected
+                        ]}>
+                          {cat.name}
+                        </Text>
+                        {category === cat.name && <Text style={styles.checkMark}>✓</Text>}
+                      </TouchableOpacity>
+                    ))}
+
+                    {/* Add Category Button */}
                     <TouchableOpacity
-                      key={cat.id}
-                      style={[
-                        styles.modalItem,
-                        category === cat.name && styles.modalItemSelected
-                      ]}
+                      style={styles.addCategoryListButton}
                       onPress={() => {
-                        setCategory(cat.name);
-                        setCategoryId(cat.id);
                         setShowCategoryDropdown(false);
+                        setShowAddCategoryModal(true);
                       }}
                     >
-                      <Text style={[
-                        styles.modalItemText,
-                        category === cat.name && styles.modalItemTextSelected
-                      ]}>
-                        {cat.name}
-                      </Text>
-                      {category === cat.name && <Text style={styles.checkMark}>✓</Text>}
+                      <Text style={styles.addCategoryListButtonText}>+ Add New Category</Text>
                     </TouchableOpacity>
-                  ))
+                  </>
                 ) : (
                   <View style={styles.emptyState}>
-                    <Text style={styles.emptyStateText}>No categories found</Text>
+                    <Text style={styles.emptyStateText}>No categories available</Text>
                     <Text style={styles.emptyStateSubtext}>
-                      Categories are synced from server. Check your connection.
+                      Create your first category to organize items
                     </Text>
                     <TouchableOpacity
-                      style={styles.syncButton}
+                      style={styles.addCategoryButton}
                       onPress={() => {
                         setShowCategoryDropdown(false);
-                        handleSyncCategories();
+                        setShowAddCategoryModal(true);
                       }}
                     >
-                      <Text style={styles.syncButtonText}>🔄 Force Sync</Text>
+                      <Text style={styles.addCategoryButtonText}>+ Add Category</Text>
                     </TouchableOpacity>
                   </View>
                 )}
               </ScrollView>
             </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Add Category Modal */}
+      <Modal
+        visible={showAddCategoryModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowAddCategoryModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowAddCategoryModal(false)}
+        >
+          <View style={styles.modalContainer}>
+            <TouchableOpacity activeOpacity={1} onPress={() => { }}>
+              <View style={styles.addCategoryModalContent}>
+                {/* Header */}
+                <View style={styles.addCategoryHeader}>
+                  <Text style={styles.addCategoryTitle}>Create New Category</Text>
+                  <TouchableOpacity
+                    onPress={() => setShowAddCategoryModal(false)}
+                    style={styles.modalCloseButton}
+                  >
+                    <Text style={styles.modalCloseText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Form */}
+                <View style={styles.addCategoryForm}>
+                  {/* Category Name */}
+                  <View style={styles.addCategoryField}>
+                    <Text style={styles.addCategoryLabel}>Category Name *</Text>
+                    <TextInput
+                      style={styles.addCategoryInput}
+                      placeholder="e.g. Appetizers, Main Course"
+                      placeholderTextColor="#999"
+                      value={newCategoryName}
+                      onChangeText={setNewCategoryName}
+                      autoFocus
+                    />
+                  </View>
+
+                  {/* Description */}
+                  <View style={styles.addCategoryField}>
+                    <Text style={styles.addCategoryLabel}>Description (Optional)</Text>
+                    <TextInput
+                      style={[styles.addCategoryInput, styles.addCategoryTextArea]}
+                      placeholder="Brief description of this category"
+                      placeholderTextColor="#999"
+                      value={newCategoryDescription}
+                      onChangeText={setNewCategoryDescription}
+                      multiline
+                      numberOfLines={3}
+                      textAlignVertical="top"
+                    />
+                  </View>
+
+                  {/* Buttons */}
+                  <View style={styles.addCategoryButtons}>
+                    <TouchableOpacity
+                      style={styles.addCategoryCancelButton}
+                      onPress={() => {
+                        setNewCategoryName('');
+                        setNewCategoryDescription('');
+                        setShowAddCategoryModal(false);
+                      }}
+                    >
+                      <Text style={styles.addCategoryCancelText}>Cancel</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.addCategoryCreateButton,
+                        isCreatingCategory && styles.addCategoryCreateButtonDisabled
+                      ]}
+                      onPress={handleCreateCategory}
+                      disabled={isCreatingCategory}
+                    >
+                      {isCreatingCategory ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.addCategoryCreateText}>Create</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </TouchableOpacity>
           </View>
         </TouchableOpacity>
       </Modal>
@@ -787,6 +961,12 @@ const styles = StyleSheet.create({
     marginRight: 4,
     fontWeight: '500',
   },
+  percentageSymbol: {
+    fontSize: 16,
+    color: '#333333',
+    marginLeft: 4,
+    fontWeight: '500',
+  },
   priceInput: {
     flex: 1,
     height: '100%',
@@ -913,10 +1093,27 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   checkMark: {
-    fontSize: 16,
+    fontSize: 18,
     color: '#C62828',
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
+
+  // Add Category in List Button
+  addCategoryListButton: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+    backgroundColor: '#FAFAFA',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  addCategoryListButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#C62828',
+  },
+
+  // Empty State
   emptyState: {
     padding: 32,
     alignItems: 'center',
@@ -928,10 +1125,120 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   emptyStateSubtext: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#999999',
     textAlign: 'center',
     marginBottom: 16,
+  },
+  addCategoryButton: {
+    backgroundColor: '#C62828',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+    shadowColor: '#C62828',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  addCategoryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+
+  // Add Category Modal Styles
+  addCategoryModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 10,
+    width: '100%',
+  },
+  addCategoryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+    backgroundColor: '#FAFAFA',
+  },
+  addCategoryTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#333333',
+  },
+  addCategoryForm: {
+    padding: 20,
+    gap: 20,
+  },
+  addCategoryField: {
+    gap: 8,
+  },
+  addCategoryLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333333',
+  },
+  addCategoryInput: {
+    height: 48,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    fontSize: 16,
+    color: '#333333',
+  },
+  addCategoryTextArea: {
+    height: 80,
+    paddingTop: 12,
+  },
+  addCategoryButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  addCategoryCancelButton: {
+    flex: 1,
+    height: 48,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  addCategoryCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666666',
+  },
+  addCategoryCreateButton: {
+    flex: 1,
+    height: 48,
+    backgroundColor: '#C62828',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#C62828',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  addCategoryCreateButtonDisabled: {
+    opacity: 0.6,
+  },
+  addCategoryCreateText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
   syncButton: {
     backgroundColor: '#C62828',

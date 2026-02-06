@@ -6,8 +6,6 @@ import {
   TouchableOpacity,
   StatusBar,
   ScrollView,
-  TextInput,
-  Switch,
   Animated,
   ActivityIndicator,
   Alert,
@@ -15,20 +13,27 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/business.types';
 import API from '../services/api';
-// import { getBusinessSettings, saveBusinessSettings } from '../services/storage';
 
 type GSTSettingsScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'GSTSettings'>;
 };
 
-type GSTType = 'Inclusive' | 'Exclusive';
-type RoundingRule = 'nearest' | 'up' | 'down' | 'none';
+type TaxMode = 'cgst_sgst' | 'igst';
+
+// GST Rate options based on the relationship table
+const GST_RATES = [
+  { total: 0, cgst: 0, sgst: 0, igst: 0 },
+  { total: 0.25, cgst: 0.125, sgst: 0.125, igst: 0.25 },
+  { total: 3, cgst: 1.5, sgst: 1.5, igst: 3 },
+  { total: 5, cgst: 2.5, sgst: 2.5, igst: 5 },
+  { total: 12, cgst: 6, sgst: 6, igst: 12 },
+  { total: 18, cgst: 9, sgst: 9, igst: 18 },
+  { total: 28, cgst: 14, sgst: 14, igst: 28 },
+];
 
 const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => {
-  const [gstPercent, setGstPercent] = useState('18');
-  const [itemLevelOverride, setItemLevelOverride] = useState(true);
-  const [gstType, setGstType] = useState<GSTType>('Inclusive');
-  const [roundingRule, setRoundingRule] = useState<RoundingRule>('nearest');
+  const [taxMode, setTaxMode] = useState<TaxMode>('cgst_sgst');
+  const [selectedRate, setSelectedRate] = useState(5); // Default 5% total GST
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -62,20 +67,22 @@ const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => 
       const profile = await API.auth.getProfile();
 
       if (profile) {
-        // Load tax_rate as gst percent
-        if (profile.default_gst_percentage !== undefined) {
-          setGstPercent(profile.default_gst_percentage.toString());
+        // 1. Try to load from new field: default_gst_percentage
+        if (profile.default_gst_percentage !== undefined && profile.default_gst_percentage !== null) {
+          setSelectedRate(profile.default_gst_percentage);
+        }
+        // 2. Fallback: Calculate from backend fields (cgst + sgst)
+        else if (profile.cgst_percentage || profile.sgst_percentage) {
+          const totalFromBackend = (parseFloat(profile.cgst_percentage?.toString() || '0') || 0) +
+            (parseFloat(profile.sgst_percentage?.toString() || '0') || 0);
+          if (totalFromBackend > 0) {
+            setSelectedRate(totalFromBackend);
+          }
         }
 
-        // Load other GST settings if they exist
-        if (profile.gst_type) {
-          setGstType(profile.gst_type as GSTType);
-        }
-        if (profile.item_level_override !== undefined) {
-          setItemLevelOverride(profile.item_level_override === true);
-        }
-        if (profile.rounding_rule) {
-          setRoundingRule(profile.rounding_rule as RoundingRule);
+        // Load tax mode
+        if (profile.tax_mode) {
+          setTaxMode(profile.tax_mode);
         }
       }
     } catch (error) {
@@ -87,21 +94,20 @@ const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => 
   };
 
   const handleSaveSettings = async () => {
-    const percent = parseFloat(gstPercent);
-
-    if (isNaN(percent) || percent < 0 || percent > 100) {
-      Alert.alert('Invalid GST', 'Please enter a valid GST percentage (0-100)');
-      return;
-    }
-
     try {
       setIsSaving(true);
 
+      // Calculate half rate for backend storage (e.g., 28% -> 14% CGST + 14% SGST)
+      const halfRate = selectedRate / 2;
+
       await API.auth.updateProfile({
-        default_gst_percentage: percent,
-        gst_type: gstType,
-        item_level_override: itemLevelOverride,
-        rounding_rule: roundingRule,
+        // Frontend fields (for our logic)
+        default_gst_percentage: selectedRate,
+        tax_mode: taxMode,
+
+        // Backend fields (for persistence and legacy support)
+        cgst_percentage: halfRate,
+        sgst_percentage: halfRate,
       });
 
       Alert.alert(
@@ -122,13 +128,11 @@ const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => 
     }
   };
 
-  const getGstTypeDescription = () => {
-    if (gstType === 'Inclusive') {
-      return '✓ Prices shown to customers already include GST';
-    } else {
-      return '✓ GST will be added on top of prices';
-    }
+  const getSelectedRateDetails = () => {
+    return GST_RATES.find(rate => rate.total === selectedRate) || GST_RATES[3]; // Default to 5%
   };
+
+  const rateDetails = getSelectedRateDetails();
 
   if (isLoading) {
     return (
@@ -164,7 +168,7 @@ const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => 
 
         <View style={styles.headerText}>
           <Text style={styles.title}>GST Settings</Text>
-          <Text style={styles.subtitle}>Configure tax settings</Text>
+          <Text style={styles.subtitle}>Configure tax rates</Text>
         </View>
       </Animated.View>
 
@@ -172,7 +176,7 @@ const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => 
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* Global GST Percent */}
+        {/* Tax Mode Selection */}
         <Animated.View
           style={[
             styles.card,
@@ -189,112 +193,82 @@ const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => 
             },
           ]}
         >
-          <Text style={styles.cardTitle}>Global GST Percent</Text>
+          <Text style={styles.cardTitle}>Tax Type</Text>
           <Text style={styles.cardDescription}>
-            Set a default GST percentage for all items
+            Select CGST/SGST for intra-state or IGST for inter-state transactions
           </Text>
 
-          {/* Quick Select Buttons */}
-          <View style={styles.gstPresetsContainer}>
+          <View style={styles.taxModeButtons}>
             <TouchableOpacity
               style={[
-                styles.gstPresetButton,
-                gstPercent === '0' && styles.gstPresetButtonSelected,
+                styles.taxModeButton,
+                taxMode === 'cgst_sgst' && styles.taxModeButtonSelected,
               ]}
-              onPress={() => !isSaving && setGstPercent('0')}
+              onPress={() => !isSaving && setTaxMode('cgst_sgst')}
               activeOpacity={0.9}
               disabled={isSaving}
             >
               <Text
                 style={[
-                  styles.gstPresetButtonText,
-                  gstPercent === '0' && styles.gstPresetButtonTextSelected,
+                  styles.taxModeButtonText,
+                  taxMode === 'cgst_sgst' && styles.taxModeButtonTextSelected,
                 ]}
               >
-                0%
+                CGST + SGST
+              </Text>
+              <Text
+                style={[
+                  styles.taxModeButtonSubtext,
+                  taxMode === 'cgst_sgst' && styles.taxModeButtonSubtextSelected,
+                ]}
+              >
+                Intra-State
               </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={[
-                styles.gstPresetButton,
-                gstPercent === '5' && styles.gstPresetButtonSelected,
+                styles.taxModeButton,
+                taxMode === 'igst' && styles.taxModeButtonSelected,
               ]}
-              onPress={() => !isSaving && setGstPercent('5')}
+              onPress={() => !isSaving && setTaxMode('igst')}
               activeOpacity={0.9}
               disabled={isSaving}
             >
               <Text
                 style={[
-                  styles.gstPresetButtonText,
-                  gstPercent === '5' && styles.gstPresetButtonTextSelected,
+                  styles.taxModeButtonText,
+                  taxMode === 'igst' && styles.taxModeButtonTextSelected,
                 ]}
               >
-                5%
+                IGST
               </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.gstPresetButton,
-                gstPercent === '8' && styles.gstPresetButtonSelected,
-              ]}
-              onPress={() => !isSaving && setGstPercent('8')}
-              activeOpacity={0.9}
-              disabled={isSaving}
-            >
               <Text
                 style={[
-                  styles.gstPresetButtonText,
-                  gstPercent === '8' && styles.gstPresetButtonTextSelected,
+                  styles.taxModeButtonSubtext,
+                  taxMode === 'igst' && styles.taxModeButtonSubtextSelected,
                 ]}
               >
-                8%
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.gstPresetButton,
-                gstPercent === '18' && styles.gstPresetButtonSelected,
-              ]}
-              onPress={() => !isSaving && setGstPercent('18')}
-              activeOpacity={0.9}
-              disabled={isSaving}
-            >
-              <Text
-                style={[
-                  styles.gstPresetButtonText,
-                  gstPercent === '18' && styles.gstPresetButtonTextSelected,
-                ]}
-              >
-                18%
+                Inter-State
               </Text>
             </TouchableOpacity>
           </View>
 
-          {/* Custom Input */}
-          <Text style={styles.customLabel}>Or enter custom percentage:</Text>
-          <View style={styles.percentInputContainer}>
-            <TextInput
-              style={styles.percentInput}
-              value={gstPercent}
-              onChangeText={setGstPercent}
-              placeholder="Enter custom GST %"
-              placeholderTextColor="#999999"
-              keyboardType="numeric"
-              maxLength={5}
-              editable={!isSaving}
-            />
-            <Text style={styles.percentSymbol}>%</Text>
+          {/* Info Box */}
+          <View style={styles.infoBox}>
+            <Text style={styles.infoIcon}>💡</Text>
+            <Text style={styles.infoText}>
+              {taxMode === 'cgst_sgst'
+                ? 'CGST + SGST applies when buyer and seller are in the same state'
+                : 'IGST applies when buyer and seller are in different states'}
+            </Text>
           </View>
         </Animated.View>
 
-        {/* Item Level GST Override */}
+        {/* GST Rate Selection */}
         <Animated.View
           style={[
             styles.card,
-            styles.toggleCard,
             {
               opacity: fadeAnim,
               transform: [
@@ -308,29 +282,60 @@ const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => 
             },
           ]}
         >
-          <View style={styles.toggleContent}>
-            <View style={styles.toggleInfo}>
-              <Text style={styles.cardTitle}>Item Level GST Override</Text>
-              <Text style={styles.cardDescription}>
-                Allow custom GST percent for specific items
-              </Text>
-            </View>
+          <Text style={styles.cardTitle}>Select GST Rate</Text>
+          <Text style={styles.cardDescription}>
+            Choose the applicable GST percentage
+          </Text>
 
-            <Switch
-              value={itemLevelOverride}
-              onValueChange={setItemLevelOverride}
-              trackColor={{ false: '#E0E0E0', true: '#C62828' }}
-              thumbColor="#FFFFFF"
-              ios_backgroundColor="#E0E0E0"
-              disabled={isSaving}
-            />
+          <View style={styles.rateOptions}>
+            {GST_RATES.map((rate) => (
+              <TouchableOpacity
+                key={rate.total}
+                style={[
+                  styles.rateButton,
+                  selectedRate === rate.total && styles.rateButtonSelected,
+                ]}
+                onPress={() => !isSaving && setSelectedRate(rate.total)}
+                activeOpacity={0.9}
+                disabled={isSaving}
+              >
+                <Text
+                  style={[
+                    styles.rateButtonText,
+                    selectedRate === rate.total && styles.rateButtonTextSelected,
+                  ]}
+                >
+                  {rate.total}%
+                </Text>
+                {taxMode === 'cgst_sgst' ? (
+                  <Text
+                    style={[
+                      styles.rateButtonSubtext,
+                      selectedRate === rate.total && styles.rateButtonSubtextSelected,
+                    ]}
+                  >
+                    {rate.cgst}% + {rate.sgst}%
+                  </Text>
+                ) : (
+                  <Text
+                    style={[
+                      styles.rateButtonSubtext,
+                      selectedRate === rate.total && styles.rateButtonSubtextSelected,
+                    ]}
+                  >
+                    IGST {rate.igst}%
+                  </Text>
+                )}
+              </TouchableOpacity>
+            ))}
           </View>
         </Animated.View>
 
-        {/* GST Type 
+        {/* Summary Card */}
         <Animated.View
           style={[
             styles.card,
+            styles.summaryCard,
             {
               opacity: fadeAnim,
               transform: [
@@ -344,158 +349,41 @@ const GSTSettingsScreen: React.FC<GSTSettingsScreenProps> = ({ navigation }) => 
             },
           ]}
         >
-          <Text style={styles.cardTitle}>GST Type</Text>
-          <Text style={styles.cardDescription}>
-            Choose whether prices include or exclude GST
-          </Text>
+          <Text style={styles.summaryTitle}>Selected Tax Breakdown</Text>
 
-          <View style={styles.gstTypeButtons}>
-            <TouchableOpacity
-              style={[
-                styles.gstTypeButton,
-                gstType === 'Inclusive' && styles.gstTypeButtonSelected,
-              ]}
-              onPress={() => !isSaving && setGstType('Inclusive')}
-              activeOpacity={0.9}
-              disabled={isSaving}
-            >
-              <Text
-                style={[
-                  styles.gstTypeButtonText,
-                  gstType === 'Inclusive' && styles.gstTypeButtonTextSelected,
-                ]}
-              >
-                Inclusive
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.gstTypeButton,
-                gstType === 'Exclusive' && styles.gstTypeButtonSelected,
-              ]}
-              onPress={() => !isSaving && setGstType('Exclusive')}
-              activeOpacity={0.9}
-              disabled={isSaving}
-            >
-              <Text
-                style={[
-                  styles.gstTypeButtonText,
-                  gstType === 'Exclusive' && styles.gstTypeButtonTextSelected,
-                ]}
-              >
-                Exclusive
-              </Text>
-            </TouchableOpacity>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Total GST:</Text>
+            <Text style={styles.summaryValue}>{rateDetails.total}%</Text>
           </View>
 
-          <View style={styles.gstTypeHint}>
-            <Text style={styles.gstTypeHintText}>
-              {getGstTypeDescription()}
+          {taxMode === 'cgst_sgst' ? (
+            <>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>CGST:</Text>
+                <Text style={styles.summaryValue}>{rateDetails.cgst}%</Text>
+              </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>SGST:</Text>
+                <Text style={styles.summaryValue}>{rateDetails.sgst}%</Text>
+              </View>
+            </>
+          ) : (
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>IGST:</Text>
+              <Text style={styles.summaryValue}>{rateDetails.igst}%</Text>
+            </View>
+          )}
+
+          <View style={styles.summaryDivider} />
+
+          <View style={styles.summaryNote}>
+            <Text style={styles.summaryNoteText}>
+              👉 {taxMode === 'cgst_sgst'
+                ? `IGST = CGST + SGST = ${rateDetails.total}%`
+                : `IGST ${rateDetails.igst}% = CGST ${rateDetails.cgst}% + SGST ${rateDetails.sgst}%`}
             </Text>
           </View>
         </Animated.View>
-
-        
-        <Animated.View
-          style={[
-            styles.card,
-            {
-              opacity: fadeAnim,
-              transform: [
-                {
-                  translateY: fadeAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [50, 0],
-                  }),
-                },
-              ],
-            },
-          ]}
-        >
-          <Text style={styles.cardTitle}>Rounding Rules</Text>
-          <Text style={styles.cardDescription}>
-            Configure bill total rounding behavior
-          </Text>
-
-          <View style={styles.roundingOptions}>
-            <TouchableOpacity
-              style={[
-                styles.roundingButton,
-                roundingRule === 'nearest' && styles.roundingButtonSelected,
-              ]}
-              onPress={() => !isSaving && setRoundingRule('nearest')}
-              activeOpacity={0.9}
-              disabled={isSaving}
-            >
-              <Text
-                style={[
-                  styles.roundingButtonText,
-                  roundingRule === 'nearest' && styles.roundingButtonTextSelected,
-                ]}
-              >
-                Round to Nearest Rupee
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.roundingButton,
-                roundingRule === 'up' && styles.roundingButtonSelected,
-              ]}
-              onPress={() => !isSaving && setRoundingRule('up')}
-              activeOpacity={0.9}
-              disabled={isSaving}
-            >
-              <Text
-                style={[
-                  styles.roundingButtonText,
-                  roundingRule === 'up' && styles.roundingButtonTextSelected,
-                ]}
-              >
-                Always Round Up
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.roundingButton,
-                roundingRule === 'down' && styles.roundingButtonSelected,
-              ]}
-              onPress={() => !isSaving && setRoundingRule('down')}
-              activeOpacity={0.9}
-              disabled={isSaving}
-            >
-              <Text
-                style={[
-                  styles.roundingButtonText,
-                  roundingRule === 'down' && styles.roundingButtonTextSelected,
-                ]}
-              >
-                Always Round Down
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.roundingButton,
-                roundingRule === 'none' && styles.roundingButtonSelected,
-              ]}
-              onPress={() => !isSaving && setRoundingRule('none')}
-              activeOpacity={0.9}
-              disabled={isSaving}
-            >
-              <Text
-                style={[
-                  styles.roundingButtonText,
-                  roundingRule === 'none' && styles.roundingButtonTextSelected,
-                ]}
-              >
-                No Rounding (Exact Amount)
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </Animated.View>*/}
 
         {/* Save Button */}
         <Animated.View
@@ -584,16 +472,13 @@ const styles = StyleSheet.create({
     borderWidth: 0.6,
     borderColor: '#E0E0E0',
     borderRadius: 16,
-    padding: 21,
+    padding: 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 3,
     elevation: 2,
-    gap: 8,
-  },
-  toggleCard: {
-    paddingVertical: 21,
+    gap: 12,
   },
   cardTitle: {
     fontSize: 18,
@@ -603,152 +488,168 @@ const styles = StyleSheet.create({
     lineHeight: 27,
   },
   cardDescription: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#999999',
     letterSpacing: -0.31,
-    lineHeight: 24,
+    lineHeight: 21,
   },
-  gstPresetsContainer: {
+
+  // Tax Mode Styles
+  taxModeButtons: {
     flexDirection: 'row',
     gap: 12,
     marginTop: 8,
   },
-  gstPresetButton: {
+  taxModeButton: {
     flex: 1,
-    height: 48,
-    borderWidth: 1.81,
+    borderWidth: 1.5,
     borderColor: '#E0E0E0',
-    borderRadius: 10,
+    borderRadius: 12,
     backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
+    padding: 16,
     alignItems: 'center',
-  },
-  gstPresetButtonSelected: {
-    borderColor: '#C62828',
-    backgroundColor: '#FFF5F5',
-  },
-  gstPresetButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#666666',
-    letterSpacing: -0.31,
-    lineHeight: 24,
-  },
-  gstPresetButtonTextSelected: {
-    color: '#C62828',
-  },
-  customLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#666666',
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  percentInputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 0.6,
-    borderColor: '#E0E0E0',
-    borderRadius: 10,
-    height: 49,
-    paddingHorizontal: 16,
-  },
-  percentInput: {
-    flex: 1,
-    fontSize: 16,
-    color: '#333333',
-    letterSpacing: -0.31,
-  },
-  percentSymbol: {
-    fontSize: 16,
-    color: '#333333',
-    letterSpacing: -0.31,
-    marginLeft: 8,
-  },
-  toggleContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
-  },
-  toggleInfo: {
-    flex: 1,
     gap: 4,
   },
-  gstTypeButtons: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  gstTypeButton: {
-    flex: 1,
-    height: 48,
-    borderWidth: 1.81,
-    borderColor: '#E0E0E0',
-    borderRadius: 10,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  gstTypeButtonSelected: {
+  taxModeButtonSelected: {
     borderColor: '#C62828',
     backgroundColor: '#FFF5F5',
   },
-  gstTypeButtonText: {
+  taxModeButtonText: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#666666',
     letterSpacing: -0.31,
-    lineHeight: 24,
   },
-  gstTypeButtonTextSelected: {
+  taxModeButtonTextSelected: {
     color: '#C62828',
   },
-  gstTypeHint: {
-    backgroundColor: '#F5F5F5',
+  taxModeButtonSubtext: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#999999',
+  },
+  taxModeButtonSubtextSelected: {
+    color: '#C62828',
+  },
+
+  // Info Box
+  infoBox: {
+    flexDirection: 'row',
+    backgroundColor: '#F0F7FF',
     borderRadius: 10,
     padding: 12,
+    gap: 10,
+    marginTop: 4,
   },
-  gstTypeHintText: {
-    fontSize: 16,
-    color: '#666666',
-    letterSpacing: -0.31,
-    lineHeight: 24,
+  infoIcon: {
+    fontSize: 18,
   },
-  roundingOptions: {
-    gap: 13,
+  infoText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#0066CC',
+    lineHeight: 19,
   },
-  roundingButton: {
-    height: 48,
-    borderWidth: 1.81,
+
+  // Rate Options
+  rateOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginTop: 8,
+  },
+  rateButton: {
+    width: '30%',
+    borderWidth: 1.5,
     borderColor: '#E0E0E0',
-    borderRadius: 10,
+    borderRadius: 12,
     backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    paddingHorizontal: 18,
+    padding: 14,
+    alignItems: 'center',
+    gap: 4,
   },
-  roundingButtonSelected: {
+  rateButtonSelected: {
     borderColor: '#C62828',
     backgroundColor: '#FFF5F5',
   },
-  roundingButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
+  rateButtonText: {
+    fontSize: 18,
+    fontWeight: '700',
     color: '#666666',
-    letterSpacing: -0.31,
-    lineHeight: 24,
   },
-  roundingButtonTextSelected: {
+  rateButtonTextSelected: {
     color: '#C62828',
   },
+  rateButtonSubtext: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#999999',
+  },
+  rateButtonSubtextSelected: {
+    color: '#C62828',
+  },
+
+  // Summary Card
+  summaryCard: {
+    backgroundColor: '#FAFAFA',
+    borderColor: '#C62828',
+    borderWidth: 1.5,
+  },
+  summaryTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#333333',
+    marginBottom: 8,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  summaryLabel: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: '#666666',
+  },
+  summaryValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#C62828',
+  },
+  summaryDivider: {
+    height: 1,
+    backgroundColor: '#E0E0E0',
+    marginVertical: 8,
+  },
+  summaryNote: {
+    backgroundColor: '#FFF5F5',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 4,
+  },
+  summaryNoteText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#C62828',
+    lineHeight: 19,
+  },
+
+  // Save Button
   saveButtonContainer: {
     marginTop: 8,
   },
   saveButton: {
     backgroundColor: '#C62828',
     height: 52,
-    borderRadius: 10,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#C62828',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   saveButtonDisabled: {
     opacity: 0.6,

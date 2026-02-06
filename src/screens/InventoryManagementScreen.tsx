@@ -296,9 +296,9 @@ const InventoryManagementScreen: React.FC<InventoryManagementScreenProps> = ({ n
               await API.inventory.delete(item.id);
               await loadData();
               Alert.alert('Success', 'Item deleted successfully');
-            } catch (error) {
+            } catch (error: any) {
               console.error('Delete failed:', error);
-              Alert.alert('Error', 'Failed to delete item');
+              Alert.alert('Error', `Failed to delete item: ${error.response?.data?.error || error.message}`);
             }
           },
         },

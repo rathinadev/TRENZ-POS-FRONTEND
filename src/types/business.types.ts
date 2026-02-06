@@ -38,6 +38,7 @@ export interface MenuItem {
   gst_percentage?: number;
   veg_nonveg?: VegNonVeg;
   additional_discount?: number;
+  discount_percentage?: number; // Alias for additional_discount (percentage-based)
   category: string;             // Keep for backward compatibility (first category name)
   category_ids?: string[];      // Array of category IDs
   image?: string;
@@ -47,6 +48,7 @@ export interface MenuItem {
   description?: string;
   stock_quantity?: number;
   sku?: string;
+  hsn_code?: string;            // HSN code for GST
   barcode?: string;
   is_active?: boolean;
   sort_order?: number;

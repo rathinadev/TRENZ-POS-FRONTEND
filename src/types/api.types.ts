@@ -37,6 +37,7 @@ export interface VendorProfile {
   // Added for settings
   gst_type?: 'Inclusive' | 'Exclusive';
   default_gst_percentage?: number;
+  tax_mode?: 'cgst_sgst' | 'igst';  // NEW: Tax mode preference
   item_level_override?: boolean;
   rounding_rule?: 'nearest' | 'up' | 'down' | 'none';
   show_gst_breakdown?: boolean;
@@ -111,8 +112,10 @@ export interface Item {
   gst_percentage: number;
   veg_nonveg?: VegNonVeg;
   additional_discount?: number;
+  discount_percentage?: number;  // Alias for additional_discount (percentage-based)
   stock_quantity: number;
   sku?: string;
+  hsn_code?: string;  // HSN code for GST
   barcode?: string;
   is_active: boolean;
   sort_order: number;
@@ -510,6 +513,7 @@ export interface MenuItem {
   gst_percentage?: number;
   veg_nonveg?: VegNonVeg;
   additional_discount?: number;
+  discount_percentage?: number;  // Alias for additional_discount (percentage-based)
   category: string;
   category_ids?: string[];
   image?: string;
@@ -519,6 +523,7 @@ export interface MenuItem {
   description?: string;
   stock_quantity?: number;
   sku?: string;
+  hsn_code?: string;  // HSN code for GST
   barcode?: string;
   is_active?: boolean;
   sort_order?: number;

@@ -23,7 +23,7 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ navigation, route }) =>
   // Billing mode state
   const [billingMode, setBillingMode] = useState<BillingMode>('gst');
 
-  // Default to Intra-State (False) since buttons are removed
+  // Load tax mode from settings and set isInterState accordingly
   const [isInterState, setIsInterState] = useState(false);
 
   // GST Type: Default to 'exclusive'
@@ -53,57 +53,99 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ navigation, route }) =>
   const summaryScale = useRef(new Animated.Value(0.95)).current;
   const billingModeOpacity = useRef(new Animated.Value(0)).current;
   const billingModeTranslateY = useRef(new Animated.Value(20)).current;
+  const cartOpacity = useRef(new Animated.Value(0)).current;
+  const cartTranslateY = useRef(new Animated.Value(20)).current;
   const discountOpacity = useRef(new Animated.Value(0)).current;
   const discountTranslateY = useRef(new Animated.Value(20)).current;
   const paymentOpacity = useRef(new Animated.Value(0)).current;
   const paymentTranslateY = useRef(new Animated.Value(20)).current;
+  const customerOpacity = useRef(new Animated.Value(0)).current;
+  const customerTranslateY = useRef(new Animated.Value(20)).current;
+  const notesOpacity = useRef(new Animated.Value(0)).current;
+  const notesTranslateY = useRef(new Animated.Value(20)).current;
   const billOpacity = useRef(new Animated.Value(0)).current;
   const billTranslateY = useRef(new Animated.Value(20)).current;
+  const buttonOpacity = useRef(new Animated.Value(0)).current;
+
+  // Global GST Settings
+  const [globalGstRate, setGlobalGstRate] = useState<number | null>(null);
+  const [allowItemOverride, setAllowItemOverride] = useState(true);
+
+  // Load tax mode and global settings from profile on mount
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const profile = await API.auth.getProfile();
+        if (profile) {
+          // 1. Tax Mode (Inter-state vs Intra-state)
+          if (profile.tax_mode) {
+            setIsInterState(profile.tax_mode === 'igst');
+          }
+
+          // 2. Global GST Rate
+          if (profile.default_gst_percentage !== undefined && profile.default_gst_percentage !== null) {
+            setGlobalGstRate(profile.default_gst_percentage);
+          } else if (profile.cgst_percentage || profile.sgst_percentage) {
+            // Fallback: Calculate from backend fields
+            const totalBackendRate = (parseFloat(profile.cgst_percentage?.toString() || '0') || 0) +
+              (parseFloat(profile.sgst_percentage?.toString() || '0') || 0);
+            if (totalBackendRate > 0) {
+              setGlobalGstRate(totalBackendRate);
+            }
+          }
+
+          // 3. Item Override Setting
+          if (profile.item_level_override !== undefined) {
+            setAllowItemOverride(profile.item_level_override);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load settings:', error);
+        // Defaults: Intra-state, Allow item overrides
+        setIsInterState(false);
+        setAllowItemOverride(true);
+      }
+    };
+
+    loadSettings();
+  }, []);
 
   useEffect(() => {
-    // Start animations sequence
-    Animated.sequence([
-      Animated.delay(100),
+    // Stagger animations
+    Animated.stagger(100, [
       Animated.parallel([
         Animated.timing(headerOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
         Animated.spring(headerTranslateY, { toValue: 0, friction: 7, tension: 40, useNativeDriver: true }),
       ]),
-    ]).start();
-
-    Animated.sequence([
-      Animated.delay(250),
+      // Summary (Card)
       Animated.parallel([
         Animated.timing(summaryOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
-        Animated.spring(summaryScale, { toValue: 1, friction: 6, tension: 40, useNativeDriver: true }),
+        Animated.spring(summaryScale, { toValue: 1, friction: 7, tension: 40, useNativeDriver: true }),
       ]),
-    ]).start();
-
-    Animated.sequence([
-      Animated.delay(400),
+      // Billing Mode
       Animated.parallel([
         Animated.timing(billingModeOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
         Animated.spring(billingModeTranslateY, { toValue: 0, friction: 7, tension: 40, useNativeDriver: true }),
       ]),
-    ]).start();
-
-    Animated.sequence([
-      Animated.delay(550),
+      // Discount
       Animated.parallel([
         Animated.timing(discountOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
         Animated.spring(discountTranslateY, { toValue: 0, friction: 7, tension: 40, useNativeDriver: true }),
       ]),
     ]).start();
 
+    // Payment Section
     Animated.sequence([
-      Animated.delay(700),
+      Animated.delay(600),
       Animated.parallel([
         Animated.timing(paymentOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
         Animated.spring(paymentTranslateY, { toValue: 0, friction: 7, tension: 40, useNativeDriver: true }),
       ]),
     ]).start();
 
+    // Bill Details & Customer Info
     Animated.sequence([
-      Animated.delay(850),
+      Animated.delay(800),
       Animated.parallel([
         Animated.timing(billOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
         Animated.spring(billTranslateY, { toValue: 0, friction: 7, tension: 40, useNativeDriver: true }),
@@ -111,11 +153,17 @@ const CheckoutScreen: React.FC<CheckoutScreenProps> = ({ navigation, route }) =>
     ]).start();
   }, []);
 
-  // Override cart items with selected GST type for this bill
-  const cartWithGSTType = cart.map(item => ({
-    ...item,
-    price_type: gstType,
-  }));
+  // Override cart items with selected GST type and apply Global Rate logic
+  const cartWithGSTType = cart.map(item => {
+    const newItem = { ...item, price_type: gstType };
+
+    // LOGIC: If Item Level Override is DISALLOWED, force the Global Rate
+    if (!allowItemOverride && globalGstRate !== null) {
+      newItem.gst_percentage = globalGstRate;
+    }
+
+    return newItem;
+  });
 
   // Calculate bill totals using GST calculator
   const gstCalculation = calculateGST(
