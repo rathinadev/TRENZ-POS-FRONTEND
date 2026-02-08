@@ -1,5 +1,7 @@
 # XP-v320m Printer Testing Guide
 
+> **Full reference:** For architecture, ESC/POS, implementation details, and how to extend, see **[docs/PRINTER_ULTIMATE_GUIDE.md](docs/PRINTER_ULTIMATE_GUIDE.md)**.
+
 ## 🖨 Test with XP-v320m Today
 
 ### Development on your laptop (Bluetooth printer)

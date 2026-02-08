@@ -24,7 +24,7 @@
  *    - All text is normalized with toAscii() (₹ → "Rs ", non-ASCII → '?') so the printer
  *      never receives invalid bytes.
  *
- * 4. BILL LAYOUT (built here, no layout in native)
+ * 4. BILL LAYOUT (built here, no layout pin native)
  *    - Header: store name on its own line (so first chunk isn’t ESC-only), then address,
  *      GSTIN, FSSAI, phone — all centered via space padding (formatCenterLine).
  *    - Bill details: Bill No, Date, Invoice No — label left, value right (formatLabelValueRow).
