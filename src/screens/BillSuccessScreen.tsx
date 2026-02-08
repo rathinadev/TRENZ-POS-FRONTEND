@@ -18,6 +18,8 @@ import { getVendorProfile } from '../services/auth';
 import { GSTBillTemplate, NonGSTBillTemplate } from '../components/templates';
 import type { GSTBillData, NonGSTBillData } from '../components/templates';
 import { formatBill } from '../utils/billFormatter';
+import { PrinterService } from '../services/printer';
+import { getBusinessSettings } from '../services/storage';
 
 type BillSuccessScreenProps = NativeStackScreenProps<RootStackParamList, 'BillSuccess'>;
 
@@ -38,6 +40,7 @@ const BillSuccessScreen: React.FC<BillSuccessScreenProps> = ({ navigation, route
 
   const [formattedBill, setFormattedBill] = useState<GSTBillData | NonGSTBillData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isPrinting, setIsPrinting] = useState(false);
   const [paperWidth] = useState<58 | 80>(58); // Can be made configurable
 
   const checkOpacity = useRef(new Animated.Value(0)).current;
@@ -58,6 +61,30 @@ const BillSuccessScreen: React.FC<BillSuccessScreenProps> = ({ navigation, route
       startAnimations();
     }
   }, [isLoading]);
+
+  const autoPrintDone = useRef(false);
+  // Auto-print once when bill is ready and auto_print setting is on
+  useEffect(() => {
+    if (isLoading || !formattedBill || isPrinting || autoPrintDone.current) return;
+    let cancelled = false;
+    const run = async () => {
+      const settings = await getBusinessSettings();
+      if (settings?.auto_print !== 1 || cancelled) return;
+      autoPrintDone.current = true;
+      try {
+        setIsPrinting(true);
+        await PrinterService.printBill(formattedBill!, billData.billing_mode === 'gst');
+        if (!cancelled) Alert.alert('Success', 'Bill printed successfully!');
+      } catch (e: any) {
+        if (!cancelled) Alert.alert('Print Error', e.message || 'Printer not ready. Set up in Printer Setup, then try again.');
+        autoPrintDone.current = false;
+      } finally {
+        if (!cancelled) setIsPrinting(false);
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [formattedBill, isLoading]);
 
   const loadBusinessInfo = async () => {
     try {
@@ -191,12 +218,29 @@ const BillSuccessScreen: React.FC<BillSuccessScreenProps> = ({ navigation, route
     ]).start();
   };
 
-  const handlePrintBill = () => {
-    console.log('Print bill:', billData.billNumber);
-    // TODO: Integrate with Bluetooth printer
-    // The formattedBill data is ready to be sent to thermal printer
-    // Example: await printBill(formattedBill);
-    Alert.alert('Print', 'Printing functionality will be available soon.');
+  const handlePrintBill = async () => {
+    if (!formattedBill) {
+      Alert.alert('Error', 'Bill data not ready');
+      return;
+    }
+
+    try {
+      setIsPrinting(true);
+      
+      // Get paper width from settings
+      const settings = await getBusinessSettings();
+      const paperWidthSetting: 58 | 80 = (settings?.paper_size === '80mm' ? 80 : 58) as 58 | 80;
+      
+      // Print the bill
+      await PrinterService.printBill(formattedBill, billData.billing_mode === 'gst');
+      
+      Alert.alert('Success', 'Bill printed successfully!');
+    } catch (error: any) {
+      console.error('Failed to print bill:', error);
+      Alert.alert('Print Error', error.message || 'Printer not ready. Is it on? Try Printer Setup → Connect, then print again.');
+    } finally {
+      setIsPrinting(false);
+    }
   };
 
   const handleNewBill = () => {
@@ -278,16 +322,17 @@ const BillSuccessScreen: React.FC<BillSuccessScreenProps> = ({ navigation, route
         <View style={styles.buttonRow}>
           <View style={styles.buttonHalf}>
             <AnimatedButton
-              title="Print Bill"
+              title={isPrinting ? "Printing..." : "Print Bill"}
               onPress={handlePrintBill}
-              variant="secondary"
+              variant="primary"
+              disabled={isPrinting}
             />
           </View>
           <View style={styles.buttonHalf}>
             <AnimatedButton
               title="New Bill"
               onPress={handleNewBill}
-              variant="primary"
+              variant="secondary"
             />
           </View>
         </View>

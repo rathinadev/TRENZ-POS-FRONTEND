@@ -805,6 +805,9 @@ export const saveBusinessSettings = async (data: {
   bill_footer_note?: string;
   printer_name?: string;
   printer_type?: string;
+  printer_mac_address?: string;
+  printer_connection_type?: 'bluetooth' | 'network';
+  printer_network_url?: string;
   device_id?: string;
   admin_pin?: string;
   gst_type?: string;
@@ -868,7 +871,7 @@ export const saveBusinessSettings = async (data: {
       executeSql(
         `INSERT INTO business_settings 
          (business_name, business_address, business_phone, business_email, business_gst, tax_rate, currency, 
-          bill_prefix, bill_footer_note, printer_name, printer_type, device_id, admin_pin, 
+          bill_prefix, bill_footer_note, printer_name, printer_type, printer_mac_address, printer_connection_type, printer_network_url, device_id, admin_pin, 
           gst_type, item_level_override, rounding_rule, invoice_format, 
           gst_breakdown, item_tax_split, total_quantity, payment_method, business_code, logo_path,
           paper_size, auto_print, printer_connected, last_restore_date, last_pdf_export_date,
@@ -878,7 +881,7 @@ export const saveBusinessSettings = async (data: {
           welcome_screen_view_count, last_welcome_view_date, first_welcome_view_date,
           onboarding_path, onboarding_started_date,
           is_synced, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           data.business_name || null,
           data.business_address || null,
@@ -891,6 +894,9 @@ export const saveBusinessSettings = async (data: {
           data.bill_footer_note || null,
           data.printer_name || null,
           data.printer_type || null,
+          data.printer_mac_address || null,
+          data.printer_connection_type || 'bluetooth',
+          data.printer_network_url || null,
           data.device_id || null,
           data.admin_pin || null,
           data.gst_type || 'Inclusive',

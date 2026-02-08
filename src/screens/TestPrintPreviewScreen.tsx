@@ -13,6 +13,7 @@ import {
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/business.types';
 import { getBusinessSettings, saveBusinessSettings } from '../services/storage';
+import { PrinterService } from '../services/printer';
 
 type TestPrintPreviewScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'TestPrintPreview'>;
@@ -117,29 +118,40 @@ const TestPrintPreviewScreen: React.FC<TestPrintPreviewScreenProps> = ({ navigat
     setPrintTime(currentTime);
 
     try {
-      // Simulate printing process
-      await new Promise<void>(resolve => setTimeout(() => resolve(), 2000));
-
-      // Check printer connection from database
-      const settings = await getBusinessSettings();
-      const isConnected = settings?.printer_connected === 1;
-
-      if (isConnected) {
-        // Success - save test print info
-        const timestamp = new Date().toISOString();
-        const testPrintCount = (settings?.test_print_count || 0) + 1;
-
-        await saveBusinessSettings({
-          last_test_print_date: timestamp,
-          test_print_count: testPrintCount,
-        });
-
-        setPrintStatus('success');
-      } else {
-        // Failure - printer not connected
-        setPrintStatus('failure');
+      // Check if printer is connected
+      const isConnected = await PrinterService.isConnected();
+      
+      if (!isConnected) {
+        // Try to connect using saved MAC address
+        const settings = await getBusinessSettings();
+        if (settings?.printer_mac_address) {
+          try {
+            await PrinterService.connectBluetooth(settings.printer_mac_address);
+          } catch (error: any) {
+            console.error('Failed to connect:', error);
+            setPrintStatus('failure');
+            return;
+          }
+        } else {
+          setPrintStatus('failure');
+          return;
+        }
       }
-    } catch (error) {
+
+      // Print test page
+      await PrinterService.printTestPage();
+
+      // Success - save test print info
+      const timestamp = new Date().toISOString();
+      const settings = await getBusinessSettings();
+      const testPrintCount = (settings?.test_print_count || 0) + 1;
+      await saveBusinessSettings({
+        last_test_print_date: timestamp,
+        test_print_count: testPrintCount,
+      });
+      
+      setPrintStatus('success');
+    } catch (error: any) {
       console.error('Print error:', error);
       setPrintStatus('failure');
     }

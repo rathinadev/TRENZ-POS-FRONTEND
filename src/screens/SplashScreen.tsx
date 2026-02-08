@@ -3,7 +3,7 @@ import { View, StyleSheet, Animated, Text } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import StoreIcon from '../assets/icons/store.svg';
 import type { RootStackParamList } from '../types/business.types';
-// Local storage import removed
+import { initDatabase } from '../database/schema';
 import { checkAuthStatus } from '../services/auth';
 
 type SplashScreenProps = {
@@ -74,9 +74,15 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
   const businessNameOpacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // Just start animations and set ready
     startAnimations();
-    setTimeout(() => setIsReady(true), 1000);
+    (async () => {
+      try {
+        await initDatabase();
+      } catch (e) {
+        console.error('DB init failed:', e);
+      }
+      setTimeout(() => setIsReady(true), 1000);
+    })();
   }, []);
 
   useEffect(() => {

@@ -4,10 +4,13 @@
   "private": true,
   "scripts": {
     "android": "react-native run-android",
+    "android:with-adb": "node scripts/run-android-with-adb.js",
+    "android:device": "react-native run-android -- -PreactNativeArchitectures=arm64-v8a",
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
-    "test": "jest"
+    "test": "jest",
+    "relay": "node print-relay-server.js"
   },
   "dependencies": {
     "@op-engineering/op-sqlite": "^15.2.0-beta.0",
@@ -53,6 +56,7 @@
     "eslint": "^8.19.0",
     "jest": "^29.6.3",
     "prettier": "2.8.8",
+    "serialport": "^12.0.0",
     "react-native-svg-transformer": "^1.5.2",
     "react-test-renderer": "19.2.0",
     "typescript": "^5.8.3"

@@ -10,10 +10,19 @@ import {
   Animated,
   ActivityIndicator,
   Alert,
+  RefreshControl,
+  Platform,
+  PermissionsAndroid,
+  TextInput,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../types/business.types';
+import { NativeModules } from 'react-native';
 import { getBusinessSettings, saveBusinessSettings } from '../services/storage';
+import { PrinterService, type BluetoothDevice } from '../services/printer';
+
+const { XprinterModule } = NativeModules;
 
 type PrinterSetupScreenProps = {
   navigation: NativeStackNavigationProp<RootStackParamList, 'PrinterSetup'>;
@@ -24,13 +33,19 @@ type PaperSize = '58mm' | '80mm' | 'A4';
 type ConnectionStatus = 'connected' | 'disconnected' | 'connecting' | 'disconnecting';
 
 const PrinterSetupScreen: React.FC<PrinterSetupScreenProps> = ({ navigation }) => {
-  const [selectedPrinter, setSelectedPrinter] = useState<PrinterModel>('Epson TM-T82');
+  const [bluetoothDevices, setBluetoothDevices] = useState<BluetoothDevice[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<BluetoothDevice | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [selectedPaperSize, setSelectedPaperSize] = useState<PaperSize>('58mm');
   const [autoPrint, setAutoPrint] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingDevices, setIsLoadingDevices] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   const [isSavingPrinter, setIsSavingPrinter] = useState(false);
   const [isSavingPaperSize, setIsSavingPaperSize] = useState(false);
+  const [useNetworkPrint, setUseNetworkPrint] = useState(false);
+  const [networkPrintUrl, setNetworkPrintUrl] = useState('http://10.0.2.2:9101');
+  const [isSavingNetwork, setIsSavingNetwork] = useState(false);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
@@ -38,6 +53,12 @@ const PrinterSetupScreen: React.FC<PrinterSetupScreenProps> = ({ navigation }) =
   useEffect(() => {
     loadPrinterSettings();
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (Platform.OS === 'android') loadBluetoothDevices();
+    }, [])
+  );
 
   useEffect(() => {
     if (!isLoading) {
@@ -62,19 +83,28 @@ const PrinterSetupScreen: React.FC<PrinterSetupScreenProps> = ({ navigation }) =
       const settings = await getBusinessSettings();
       
       if (settings) {
-        if (settings.printer_name) {
-          setSelectedPrinter(settings.printer_name as PrinterModel);
-        }
         if (settings.paper_size) {
           setSelectedPaperSize(settings.paper_size as PaperSize);
         }
         if (settings.auto_print !== undefined) {
           setAutoPrint(settings.auto_print === 1);
         }
-        if (settings.printer_connected !== undefined) {
-          setConnectionStatus(settings.printer_connected === 1 ? 'connected' : 'disconnected');
+        if (settings.printer_connection_type === 'network') {
+          setUseNetworkPrint(true);
+          if (settings.printer_network_url) setNetworkPrintUrl(settings.printer_network_url);
+        }
+        if (settings.printer_mac_address) {
+          const savedDevice = bluetoothDevices.find(d => d.address === settings.printer_mac_address);
+          if (savedDevice) setSelectedDevice(savedDevice);
         }
       }
+      if (Platform.OS === 'android') {
+        await loadBluetoothDevices();
+      }
+      
+      // Check connection status
+      const connected = await PrinterService.isConnected();
+      setConnectionStatus(connected ? 'connected' : 'disconnected');
     } catch (error) {
       console.error('Failed to load printer settings:', error);
       Alert.alert('Error', 'Failed to load printer settings');
@@ -83,12 +113,58 @@ const PrinterSetupScreen: React.FC<PrinterSetupScreenProps> = ({ navigation }) =
     }
   };
 
-  const printers: PrinterModel[] = [
-    'Epson TM-T82',
-    'HP Receipt Printer',
-    'Star Micronics TSP100',
-    'Generic Bluetooth Printer',
-  ];
+  const requestBluetoothPermissions = async (): Promise<boolean> => {
+    if (Platform.OS !== 'android') return true;
+    try {
+      const apiLevel = Platform.Version;
+      if (apiLevel >= 31) {
+        const granted = await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        ]);
+        const connectOk = granted['android.permission.BLUETOOTH_CONNECT'] === PermissionsAndroid.RESULTS.GRANTED;
+        const scanOk = granted['android.permission.BLUETOOTH_SCAN'] === PermissionsAndroid.RESULTS.GRANTED;
+        return connectOk && scanOk;
+      }
+      return true;
+    } catch (e) {
+      console.warn('Bluetooth permission request failed:', e);
+      return false;
+    }
+  };
+
+  const loadBluetoothDevices = async () => {
+    try {
+      setIsLoadingDevices(true);
+      const hasPermission = await requestBluetoothPermissions();
+      if (!hasPermission) {
+        Alert.alert(
+          'Permission needed',
+          'Bluetooth permission is required to see the printer. Please allow and open Printer Setup again.'
+        );
+        return;
+      }
+      const devices = await PrinterService.getPairedDevices();
+      setBluetoothDevices(devices);
+      const settings = await getBusinessSettings();
+      if (settings?.printer_mac_address) {
+        const savedDevice = devices.find(d => d.address === settings.printer_mac_address);
+        if (savedDevice) setSelectedDevice(savedDevice);
+      }
+    } catch (error: any) {
+      console.error('Failed to load Bluetooth devices:', error);
+      const code = error?.code || '';
+      const msg = error?.message || '';
+      if (code === 'BLUETOOTH_DISABLED' || /not enabled|Bluetooth is not on/i.test(msg)) {
+        setBluetoothDevices([]);
+      } else {
+        Alert.alert('Error', msg);
+      }
+    } finally {
+      setIsLoadingDevices(false);
+    }
+  };
+
 
   const paperSizes: { value: PaperSize; label: string }[] = [
     { value: '58mm', label: '58 mm Receipt' },
@@ -96,52 +172,52 @@ const PrinterSetupScreen: React.FC<PrinterSetupScreenProps> = ({ navigation }) =
     { value: 'A4', label: 'A4 Sheet' },
   ];
 
-  const handleApplyPrinter = async () => {
+  const handleSelectDevice = (device: BluetoothDevice) => {
+    setSelectedDevice(device);
+  };
+
+  const handleConnect = async () => {
+    if (!selectedDevice) {
+      Alert.alert('Error', 'Please select a printer first');
+      return;
+    }
+
     try {
-      setIsSavingPrinter(true);
-      
+      setIsConnecting(true);
+      setConnectionStatus('connecting');
+
+      await PrinterService.connectBluetooth(selectedDevice.address);
       await saveBusinessSettings({
-        printer_name: selectedPrinter,
+        printer_name: selectedDevice.name,
+        printer_mac_address: selectedDevice.address,
+        printer_connected: 1,
+        printer_connection_type: 'bluetooth',
+        printer_network_url: undefined,
       });
 
-      Alert.alert('Success', 'Printer updated successfully!');
-    } catch (error) {
-      console.error('Failed to save printer:', error);
-      Alert.alert('Error', 'Failed to save printer. Please try again.');
+      setConnectionStatus('connected');
+      Alert.alert('Done', `Connected to ${selectedDevice.name}. You can print from bills now.`);
+    } catch (error: any) {
+      console.error('Failed to connect:', error);
+      setConnectionStatus('disconnected');
+      Alert.alert('Connection Failed', error.message || 'Failed to connect to printer. Make sure the printer is turned on and paired in Bluetooth settings.');
     } finally {
-      setIsSavingPrinter(false);
+      setIsConnecting(false);
     }
   };
 
-  const handleToggleConnection = async (value: boolean) => {
-    if (value) {
-      setConnectionStatus('connecting');
-      setTimeout(async () => {
-        try {
-          await saveBusinessSettings({
-            printer_connected: 1,
-          });
-          setConnectionStatus('connected');
-        } catch (error) {
-          console.error('Failed to save connection status:', error);
-          setConnectionStatus('disconnected');
-          Alert.alert('Error', 'Failed to connect to printer');
-        }
-      }, 2000);
-    } else {
+  const handleDisconnect = async () => {
+    try {
       setConnectionStatus('disconnecting');
-      setTimeout(async () => {
-        try {
-          await saveBusinessSettings({
-            printer_connected: 0,
-          });
-          setConnectionStatus('disconnected');
-        } catch (error) {
-          console.error('Failed to save connection status:', error);
-          setConnectionStatus('connected');
-          Alert.alert('Error', 'Failed to disconnect printer');
-        }
-      }, 2000);
+      await PrinterService.disconnect();
+      await saveBusinessSettings({
+        printer_connected: 0,
+      });
+      setConnectionStatus('disconnected');
+      Alert.alert('Success', 'Disconnected from printer');
+    } catch (error: any) {
+      console.error('Failed to disconnect:', error);
+      Alert.alert('Error', 'Failed to disconnect from printer');
     }
   };
 
@@ -169,15 +245,48 @@ const PrinterSetupScreen: React.FC<PrinterSetupScreenProps> = ({ navigation }) =
   const handleAutoPrintToggle = async (value: boolean) => {
     try {
       setAutoPrint(value);
-      
-      await saveBusinessSettings({
-        auto_print: value ? 1 : 0,
-      });
+      await saveBusinessSettings({ auto_print: value ? 1 : 0 });
     } catch (error) {
       console.error('Failed to save auto print setting:', error);
-      // Revert on error
       setAutoPrint(!value);
       Alert.alert('Error', 'Failed to save auto print setting');
+    }
+  };
+
+  const handleNetworkPrintToggle = async (value: boolean) => {
+    try {
+      setUseNetworkPrint(value);
+      await saveBusinessSettings({
+        printer_connection_type: value ? 'network' : 'bluetooth',
+        printer_network_url: value ? networkPrintUrl : undefined,
+      });
+      const connected = await PrinterService.isConnected();
+      setConnectionStatus(connected ? 'connected' : 'disconnected');
+    } catch (error) {
+      console.error('Failed to save network print setting:', error);
+      setUseNetworkPrint(!value);
+      Alert.alert('Error', 'Failed to save setting');
+    }
+  };
+
+  const handleSaveNetworkUrl = async () => {
+    const url = networkPrintUrl.trim();
+    if (!url) {
+      Alert.alert('Error', 'Enter the print server URL');
+      return;
+    }
+    try {
+      setIsSavingNetwork(true);
+      await saveBusinessSettings({
+        printer_connection_type: 'network',
+        printer_network_url: url,
+      });
+      setUseNetworkPrint(true);
+      Alert.alert('Success', 'Print server URL saved. You can now print from the emulator.');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to save URL');
+    } finally {
+      setIsSavingNetwork(false);
     }
   };
 
@@ -194,9 +303,7 @@ const PrinterSetupScreen: React.FC<PrinterSetupScreenProps> = ({ navigation }) =
     }
   };
 
-  const getConnectionColor = () => {
-    return connectionStatus === 'connected' ? '#10B981' : '#999999';
-  };
+  const getConnectionColor = () => connectionStatus === 'connected' ? '#10B981' : '#999999';
 
   const isConnectionActive = () => {
     return connectionStatus === 'connected';
@@ -248,7 +355,7 @@ const PrinterSetupScreen: React.FC<PrinterSetupScreenProps> = ({ navigation }) =
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* Available Printers Card */}
+        {/* Bluetooth Devices Card */}
         <Animated.View
           style={[
             styles.card,
@@ -265,86 +372,90 @@ const PrinterSetupScreen: React.FC<PrinterSetupScreenProps> = ({ navigation }) =
             },
           ]}
         >
-          <Text style={styles.cardTitle}>Available Printers</Text>
-
-          <View style={styles.radioGroup}>
-            {printers.map((printer) => (
-              <TouchableOpacity
-                key={printer}
-                style={styles.radioOption}
-                onPress={() => setSelectedPrinter(printer)}
-                activeOpacity={0.7}
-                disabled={isSavingPrinter}
-              >
-                <View style={styles.radioButton}>
-                  {selectedPrinter === printer && (
-                    <View style={styles.radioButtonSelected} />
-                  )}
-                </View>
-                <Text style={styles.radioLabel}>{printer}</Text>
-              </TouchableOpacity>
-            ))}
+          <Text style={styles.docTip}>
+            Pair your Bluetooth printer in Android Settings first, then select it below and tap Connect (once).
+          </Text>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Bluetooth Printers</Text>
+            <TouchableOpacity
+              onPress={loadBluetoothDevices}
+              disabled={isLoadingDevices}
+              style={styles.refreshButton}
+            >
+              {isLoadingDevices ? (
+                <ActivityIndicator size="small" color="#C62828" />
+              ) : (
+                <Text style={styles.refreshButtonText}>Refresh</Text>
+              )}
+            </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={[styles.applyButton, isSavingPrinter && styles.buttonDisabled]}
-            onPress={handleApplyPrinter}
-            activeOpacity={0.9}
-            disabled={isSavingPrinter}
-          >
-            {isSavingPrinter ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <Text style={styles.applyButtonText}>Apply Printer</Text>
-            )}
-          </TouchableOpacity>
-        </Animated.View>
+          {isLoadingDevices ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="small" color="#C62828" />
+              <Text style={styles.loadingText}>Loading devices...</Text>
+            </View>
+          ) : bluetoothDevices.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>Turn on Bluetooth and pair your printer</Text>
+              <Text style={styles.emptySubtext}>
+                Tap below to open Bluetooth settings. Turn Bluetooth on, pair the printer, then come back here — the list will refresh.
+              </Text>
+              {Platform.OS === 'android' && XprinterModule?.openBluetoothSettings && (
+                <TouchableOpacity
+                  style={styles.openSettingsButton}
+                  onPress={() => XprinterModule.openBluetoothSettings().catch(() => {})}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.openSettingsButtonText}>Open Bluetooth settings</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : (
+            <View style={styles.deviceList}>
+              {bluetoothDevices.map((device) => (
+                <TouchableOpacity
+                  key={device.address}
+                  style={[
+                    styles.deviceItem,
+                    selectedDevice?.address === device.address && styles.deviceItemSelected,
+                  ]}
+                  onPress={() => handleSelectDevice(device)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.radioButton}>
+                    {selectedDevice?.address === device.address && (
+                      <View style={styles.radioButtonSelected} />
+                    )}
+                  </View>
+                  <View style={styles.deviceInfo}>
+                    <Text style={styles.deviceName}>{device.name}</Text>
+                    <Text style={styles.deviceAddress}>{device.address}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
 
-        {/* Printer Connection Card */}
-        <Animated.View
-          style={[
-            styles.card,
-            styles.connectionCard,
-            {
-              opacity: fadeAnim,
-              transform: [
-                {
-                  translateY: fadeAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [30, 0],
-                  }),
-                },
-              ],
-            },
-          ]}
-        >
-          <Text style={styles.cardTitle}>Printer Connection</Text>
-
-          <View style={styles.connectionRow}>
-            <Text style={styles.connectionLabel}>Connection Status</Text>
-            <Switch
-              value={isConnectionActive()}
-              onValueChange={handleToggleConnection}
-              trackColor={{ false: '#E0E0E0', true: '#C62828' }}
-              thumbColor="#FFFFFF"
-              ios_backgroundColor="#E0E0E0"
-              disabled={isConnectionLoading()}
-              style={{ opacity: isConnectionLoading() ? 0.5 : 1 }}
-            />
-          </View>
-
-          <View style={styles.statusRow}>
-            {isConnectionLoading() && (
-              <ActivityIndicator
-                size="small"
-                color={connectionStatus === 'connecting' ? '#C62828' : '#999999'}
-                style={styles.statusSpinner}
-              />
-            )}
-            <Text style={[styles.statusText, { color: getConnectionColor() }]}>
-              {getConnectionText()}
-            </Text>
-          </View>
+          {selectedDevice && (
+            <TouchableOpacity
+              style={[
+                styles.connectButton,
+                (isConnecting || connectionStatus === 'connected') && styles.buttonDisabled,
+              ]}
+              onPress={connectionStatus === 'connected' ? handleDisconnect : handleConnect}
+              activeOpacity={0.9}
+              disabled={isConnecting || connectionStatus === 'connected'}
+            >
+              {isConnecting ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : connectionStatus === 'connected' ? (
+                <Text style={styles.connectButtonText}>Disconnect</Text>
+              ) : (
+                <Text style={styles.connectButtonText}>Connect</Text>
+              )}
+            </TouchableOpacity>
+          )}
         </Animated.View>
 
         {/* Test Printer Card */}
@@ -544,6 +655,12 @@ const styles = StyleSheet.create({
   autoPrintCard: {
     paddingVertical: 21,
   },
+  docTip: {
+    fontSize: 13,
+    color: '#666666',
+    marginBottom: 12,
+    fontStyle: 'italic',
+  },
   cardTitle: {
     fontSize: 18,
     fontWeight: '600',
@@ -615,6 +732,20 @@ const styles = StyleSheet.create({
     letterSpacing: -0.31,
     lineHeight: 24,
   },
+  networkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  urlInput: {
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#333',
+  },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -652,6 +783,96 @@ const styles = StyleSheet.create({
   autoPrintInfo: {
     flex: 1,
     gap: 4,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  refreshButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  refreshButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#C62828',
+  },
+  loadingContainer: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    gap: 8,
+  },
+  emptyContainer: {
+    paddingVertical: 20,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 14,
+    color: '#666666',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  emptySubtext: {
+    fontSize: 12,
+    color: '#999999',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  openSettingsButton: {
+    backgroundColor: '#C62828',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
+  openSettingsButtonText: {
+    fontSize: 14,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  deviceList: {
+    gap: 12,
+    marginBottom: 14,
+  },
+  deviceItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    gap: 12,
+  },
+  deviceItemSelected: {
+    borderColor: '#C62828',
+    backgroundColor: '#FFF5F5',
+  },
+  deviceInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  deviceName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333333',
+  },
+  deviceAddress: {
+    fontSize: 12,
+    color: '#999999',
+  },
+  connectButton: {
+    backgroundColor: '#C62828',
+    height: 48,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  connectButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });
 
